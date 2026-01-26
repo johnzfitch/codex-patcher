@@ -1,0 +1,145 @@
+# =============================================================================
+# PRIVACY PATCHES - Disable Statsig Telemetry in Codex
+# =============================================================================
+#
+# These patches remove hardcoded telemetry to ab.chatgpt.com that was enabled
+# by default in upstream Codex releases. The original code sent metrics to
+# OpenAI's Statsig endpoint without explicit user consent.
+#
+# Affected files:
+# - codex-rs/otel/src/config.rs: Remove hardcoded Statsig constants and modify resolver
+# - codex-rs/core/src/config/types.rs: Change default metrics_exporter from Statsig to None
+#
+# Version: Targets Codex rust-v0.88.0 and later
+# =============================================================================
+
+[meta]
+name = "privacy-patches"
+description = "Remove hardcoded telemetry to ab.chatgpt.com"
+version_range = ">=0.88.0"
+workspace_relative = true
+
+# =============================================================================
+# Patch 1: Disable Statsig Resolver
+# =============================================================================
+# The resolve_exporter function originally hardcoded Statsig API credentials
+# and only disabled telemetry in test builds. This patch makes it always
+# return OtelExporter::None for Statsig requests.
+
+[[patches]]
+id = "disable-statsig-resolver"
+file = "otel/src/config.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+pub(crate) fn resolve_exporter(exporter: &OtelExporter) -> OtelExporter {
+    $$$
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub(crate) fn resolve_exporter(exporter: &OtelExporter) -> OtelExporter {
+    match exporter {
+        OtelExporter::Statsig => {
+            // PRIVACY PATCH: Always return None to disable Statsig telemetry
+            // Original code only disabled in tests, but ran in production
+            OtelExporter::None
+        }
+        _ => exporter.clone(),
+    }
+}
+'''
+
+# =============================================================================
+# Patch 2: Remove Statsig Endpoint Constant
+# =============================================================================
+# Remove the hardcoded Statsig OTLP endpoint URL
+
+[[patches]]
+id = "remove-statsig-endpoint"
+file = "otel/src/config.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+pub(crate) const STATSIG_OTLP_HTTP_ENDPOINT: $TYPE = $VALUE;
+'''
+
+[patches.operation]
+type = "delete"
+insert_comment = "// PRIVACY PATCH: Statsig endpoint removed (was: https://ab.chatgpt.com/otlp/v1/metrics)"
+
+# =============================================================================
+# Patch 3: Remove Statsig API Key Header Constant
+# =============================================================================
+
+[[patches]]
+id = "remove-statsig-header"
+file = "otel/src/config.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+pub(crate) const STATSIG_API_KEY_HEADER: $TYPE = $VALUE;
+'''
+
+[patches.operation]
+type = "delete"
+insert_comment = "// PRIVACY PATCH: Statsig API key header removed"
+
+# =============================================================================
+# Patch 4: Remove Statsig API Key Constant
+# =============================================================================
+# Remove the hardcoded Statsig API key that was sending metrics to OpenAI
+
+[[patches]]
+id = "remove-statsig-api-key"
+file = "otel/src/config.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+pub(crate) const STATSIG_API_KEY: $TYPE = $VALUE;
+'''
+
+[patches.operation]
+type = "delete"
+insert_comment = "// PRIVACY PATCH: Statsig API key removed (was: client-MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO)"
+
+# =============================================================================
+# Patch 5: Change Default Metrics Exporter (types.rs)
+# =============================================================================
+# In the Default impl for OtelConfig, change metrics_exporter from Statsig to None
+
+[[patches]]
+id = "default-metrics-none-types"
+file = "core/src/config/types.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+impl Default for OtelConfig {
+    fn default() -> Self {
+        $$$
+    }
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+impl Default for OtelConfig {
+    fn default() -> Self {
+        OtelConfig {
+            log_user_prompt: false,
+            environment: DEFAULT_OTEL_ENVIRONMENT.to_owned(),
+            exporter: OtelExporterKind::None,
+            trace_exporter: OtelExporterKind::None,
+            metrics_exporter: OtelExporterKind::None, // PRIVACY PATCH: Changed from Statsig
+        }
+    }
+}
+'''

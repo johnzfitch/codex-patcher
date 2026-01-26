@@ -1,0 +1,47 @@
+# =============================================================================
+# ZACK PROFILE - Maximum performance + full debugging capabilities (2026)
+# =============================================================================
+# Purpose: Performance testing, profiling, benchmarking on Zen 5
+#
+# MANUAL INSTALLATION:
+# Add this content to codex-rs/Cargo.toml after the [profile.ci-test] section
+#
+# Build:     RUSTFLAGS="-C target-cpu=znver5" cargo build --profile zack
+# Profiling: RUSTFLAGS="-C target-cpu=znver5 -C force-frame-pointers=yes" cargo build --profile zack
+# Run:       ./target/zack/codex
+#
+# Features:
+# - Full LTO for maximum cross-crate optimization
+# - Debug symbols for flamegraphs/perf/gdb (no runtime cost)
+# - Zen 5 CPU targeting with AVX-512 support
+# - Panic=unwind for catch_unwind compatibility (exec/tui use it)
+# - Optimizes all dependencies aggressively
+#
+# Privacy Patches Applied (0.88.0):
+# ✓ Disabled Statsig telemetry (was: hardcoded API key to ab.chatgpt.com)
+# ✓ Changed metrics_exporter default from Statsig to None
+# ✓ Removed hardcoded "client-MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO" API key
+# ✓ User config respected: [analytics] enabled = false
+#
+# Additional Privacy Controls:
+# - Runtime: Set OTEL_SDK_DISABLED=true environment variable
+# - Config: Add [analytics] enabled = false to ~/.codex/config.toml
+#
+# Optional: Add -C force-frame-pointers=yes when actively profiling with perf
+# (1-2% cost but faster profiling - DWARF unwinding works fine without it)
+# =============================================================================
+[profile.zack]
+inherits = "release"
+lto = "fat"                    # Maximum link-time optimization
+codegen-units = 1              # Best optimization (single codegen unit)
+opt-level = 3                  # Maximum optimization level
+strip = false                  # Keep symbols for profiling/debugging
+debug = 2                      # Full debug info (flamegraphs, perf, gdb)
+# panic = "unwind"             # Default - required for catch_unwind in exec/tui
+overflow-checks = false        # Disable overflow checks for max speed
+
+[profile.zack.build-override]
+opt-level = 3                  # Optimize build scripts and proc-macros
+
+[profile.zack.package."*"]
+opt-level = 3                  # Optimize all dependencies (tokio, serde, etc.)

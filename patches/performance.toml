@@ -1,0 +1,55 @@
+# =============================================================================
+# PERFORMANCE PATCHES - Zen 5 Optimized Build Profile
+# =============================================================================
+#
+# STATUS: TOML section insertion is not yet implemented in codex-patcher.
+#
+# WORKAROUND: Manually add the content from patches/zack-profile.toml
+#             to codex-rs/Cargo.toml after the [profile.ci-test] section.
+#
+# Quick install:
+#   tail -n +35 patches/zack-profile.toml >> ~/dev/codex/codex-rs/Cargo.toml
+#
+# Or copy-paste the profile section from zack-profile.toml
+#
+# Once added, build with:
+#   RUSTFLAGS="-C target-cpu=znver5" cargo build --profile zack
+#
+# =============================================================================
+
+[meta]
+name = "zack-performance-profile"
+description = "Zen 5 optimized build profile (requires manual installation)"
+version_range = ">=0.88.0"
+workspace_relative = true
+
+# TODO: Uncomment this patch once TOML insert-section is implemented
+#
+# [[patches]]
+# id = "add-zack-profile"
+# file = "Cargo.toml"
+#
+# [patches.query]
+# type = "toml"
+# section = "profile.zack"
+# ensure_absent = true
+#
+# [patches.operation]
+# type = "insert-section"
+# after_section = "profile.ci-test"
+# text = '''
+# [profile.zack]
+# inherits = "release"
+# lto = "fat"
+# codegen-units = 1
+# opt-level = 3
+# strip = false
+# debug = 2
+# overflow-checks = false
+#
+# [profile.zack.build-override]
+# opt-level = 3
+#
+# [profile.zack.package."*"]
+# opt-level = 3
+# '''
