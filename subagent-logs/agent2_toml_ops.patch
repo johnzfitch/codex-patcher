@@ -1,0 +1,739 @@
+diff --git a/src/toml/operations.rs b/src/toml/operations.rs
+new file mode 100644
+index 0000000..c1a3c0b
+--- /dev/null
++++ b/src/toml/operations.rs
+@@ -0,0 +1,111 @@
++use std::path::PathBuf;
++
++/// Constraints that control whether a query must be present or absent.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++pub struct TomlConstraints {
++    pub ensure_absent: bool,
++    pub ensure_present: bool,
++}
++
++impl TomlConstraints {
++    pub fn none() -> Self {
++        Self::default()
++    }
++}
++
++/// TOML selector used to locate a section or key.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct TomlQuery {
++    pub section: Option<String>,
++    pub key: Option<String>,
++    pub constraints: TomlConstraints,
++}
++
++impl TomlQuery {
++    pub fn section(section: impl Into<String>) -> Self {
++        Self {
++            section: Some(section.into()),
++            key: None,
++            constraints: TomlConstraints::default(),
++        }
++    }
++
++    pub fn key(key: impl Into<String>) -> Self {
++        Self {
++            section: None,
++            key: Some(key.into()),
++            constraints: TomlConstraints::default(),
++        }
++    }
++
++    pub fn key_in(section: impl Into<String>, key: impl Into<String>) -> Self {
++        Self {
++            section: Some(section.into()),
++            key: Some(key.into()),
++            constraints: TomlConstraints::default(),
++        }
++    }
++
++    pub fn with_constraints(mut self, constraints: TomlConstraints) -> Self {
++        self.constraints = constraints;
++        self
++    }
++}
++
++/// Controls where new sections are inserted.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum TomlPosition {
++    AfterSection(String),
++    BeforeSection(String),
++    AtEnd,
++    AtBeginning,
++}
++
++impl Default for TomlPosition {
++    fn default() -> Self {
++        TomlPosition::AtEnd
++    }
++}
++
++/// Supported TOML operations.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum TomlOperation {
++    InsertSection {
++        text: String,
++        position: TomlPosition,
++    },
++    AppendSection {
++        text: String,
++    },
++    ReplaceValue {
++        value: String,
++    },
++    DeleteSection,
++    ReplaceKey {
++        new_key: String,
++    },
++}
++
++/// Optional container for a TOML patch definition.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct TomlPatch {
++    pub file: PathBuf,
++    pub query: TomlQuery,
++    pub operation: TomlOperation,
++}
+
+diff --git a/src/toml/editor.rs b/src/toml/editor.rs
+new file mode 100644
+index 0000000..b0c117c
+--- /dev/null
++++ b/src/toml/editor.rs
+@@ -0,0 +1,472 @@
++use crate::edit::Edit;
++use super::operations::{TomlConstraints, TomlOperation, TomlPosition, TomlQuery};
++use std::ops::Range;
++use std::path::PathBuf;
++use thiserror::Error;
++use toml_edit::{Document, Item, Table};
++
++#[derive(Debug, Clone)]
++pub struct TomlEditor {
++    source: String,
++    document: Document<String>,
++    sections: Vec<SectionInfo>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct SectionSpan {
++    pub path: Vec<String>,
++    pub header: Range<usize>,
++    pub section: Range<usize>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct KeyValueSpan {
++    pub path: Vec<String>,
++    pub key: String,
++    pub key_span: Range<usize>,
++    pub value_span: Range<usize>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum TomlQuerySpan {
++    Section(SectionSpan),
++    KeyValue(KeyValueSpan),
++}
++
++#[derive(Error, Debug)]
++pub enum TomlEditError {
++    #[error("TOML parse error: {0}")]
++    Parse(#[from] toml_edit::TomlError),
++
++    #[error("Invalid TOML query: {0}")]
++    InvalidQuery(String),
++
++    #[error("Section not found: {0}")]
++    SectionNotFound(String),
++
++    #[error("Section query matched multiple tables: {section} (matches: {matches})")]
++    SectionAmbiguous { section: String, matches: usize },
++
++    #[error("Key not found: {key} in section {section}")]
++    KeyNotFound { key: String, section: String },
++
++    #[error("Key does not reference a value: {key} in section {section}")]
++    KeyNotValue { key: String, section: String },
++
++    #[error("Missing span for {0}")]
++    MissingSpan(String),
++
++    #[error("Constraint violated: {constraint} for {target}")]
++    ConstraintViolation { constraint: String, target: String },
++
++    #[error("Invalid operation: {0}")]
++    InvalidOperation(String),
++
++    #[error("Edit span out of bounds: {0}")]
++    SpanOutOfBounds(String),
++
++    #[error("Target already present: {0}")]
++    AlreadyPresent(String),
++
++    #[error("Target already absent: {0}")]
++    AlreadyAbsent(String),
++}
++
++#[derive(Debug, Clone)]
++struct SectionHeader {
++    path: Vec<String>,
++    header: Range<usize>,
++    position: isize,
++}
++
++#[derive(Debug, Clone)]
++struct SectionInfo {
++    path: Vec<String>,
++    header: Range<usize>,
++    section: Range<usize>,
++    position: isize,
++}
++
++impl TomlEditor {
++    pub fn new(source: impl Into<String>) -> Result<Self, TomlEditError> {
++        let source = source.into();
++        let document = Document::parse(source.clone())?;
++        let sections = build_sections(&document);
++        Ok(Self {
++            source,
++            document,
++            sections,
++        })
++    }
++
++    pub fn source(&self) -> &str {
++        &self.source
++    }
++
++    pub fn compile_query_span(&self, query: &TomlQuery) -> Result<TomlQuerySpan, TomlEditError> {
++        match (&query.section, &query.key) {
++            (Some(section), Some(key)) => {
++                let path = parse_path(section)?;
++                let section_label = path_display(&path);
++                let table = self.find_table(&path)?;
++                let table = match table {
++                    Some(table) => table,
++                    None => {
++                        self.enforce_constraints(false, query.constraints, &section_label)?;
++                        return Err(TomlEditError::AlreadyAbsent(section_label));
++                    }
++                };
++                let item = match table.get(key) {
++                    Some(item) => item,
++                    None => {
++                        let label = format_key_target(&section_label, key);
++                        self.enforce_constraints(false, query.constraints, &label)?;
++                        return Err(TomlEditError::AlreadyAbsent(label));
++                    }
++                };
++                let key_span = table
++                    .key(key)
++                    .and_then(|k| k.span())
++                    .ok_or_else(|| TomlEditError::MissingSpan(format!("key {key}")))?;
++                let value_span = match item {
++                    Item::Value(value) => value
++                        .span()
++                        .ok_or_else(|| TomlEditError::MissingSpan(format!("value {key}")))?,
++                    _ => {
++                        return Err(TomlEditError::KeyNotValue {
++                            key: key.to_string(),
++                            section: section_label,
++                        });
++                    }
++                };
++                let label = format_key_target(&section_label, key);
++                self.enforce_constraints(true, query.constraints, &label)?;
++                Ok(TomlQuerySpan::KeyValue(KeyValueSpan {
++                    path,
++                    key: key.to_string(),
++                    key_span,
++                    value_span,
++                }))
++            }
++            (None, Some(key)) => {
++                let table = self.document.as_table();
++                let section_label = "<root>".to_string();
++                let item = match table.get(key) {
++                    Some(item) => item,
++                    None => {
++                        let label = format_key_target(&section_label, key);
++                        self.enforce_constraints(false, query.constraints, &label)?;
++                        return Err(TomlEditError::AlreadyAbsent(label));
++                    }
++                };
++                let key_span = table
++                    .key(key)
++                    .and_then(|k| k.span())
++                    .ok_or_else(|| TomlEditError::MissingSpan(format!("key {key}")))?;
++                let value_span = match item {
++                    Item::Value(value) => value
++                        .span()
++                        .ok_or_else(|| TomlEditError::MissingSpan(format!("value {key}")))?,
++                    _ => {
++                        return Err(TomlEditError::KeyNotValue {
++                            key: key.to_string(),
++                            section: section_label,
++                        });
++                    }
++                };
++                let label = format_key_target(&section_label, key);
++                self.enforce_constraints(true, query.constraints, &label)?;
++                Ok(TomlQuerySpan::KeyValue(KeyValueSpan {
++                    path: Vec::new(),
++                    key: key.to_string(),
++                    key_span,
++                    value_span,
++                }))
++            }
++            (Some(section), None) => {
++                let path = parse_path(section)?;
++                let section_label = path_display(&path);
++                let matches = self.matching_sections(&path);
++                if matches.is_empty() {
++                    self.enforce_constraints(false, query.constraints, &section_label)?;
++                    return Err(TomlEditError::AlreadyAbsent(section_label));
++                }
++                if matches.len() > 1 {
++                    return Err(TomlEditError::SectionAmbiguous {
++                        section: section_label,
++                        matches: matches.len(),
++                    });
++                }
++                self.enforce_constraints(true, query.constraints, &section_label)?;
++                let section = matches[0];
++                Ok(TomlQuerySpan::Section(SectionSpan {
++                    path,
++                    header: section.header.clone(),
++                    section: section.section.clone(),
++                }))
++            }
++            (None, None) => Err(TomlEditError::InvalidQuery(
++                "missing section/key selector".to_string(),
++            )),
++        }
++    }
++
++    pub fn compile_edit(
++        &self,
++        file: impl Into<PathBuf>,
++        query: &TomlQuery,
++        operation: &TomlOperation,
++    ) -> Result<Edit, TomlEditError> {
++        let file = file.into();
++        match operation {
++            TomlOperation::InsertSection { text, position } => {
++                self.compile_insert(file, query, text, position)
++            }
++            TomlOperation::AppendSection { text } => {
++                self.compile_insert(file, query, text, &TomlPosition::AtEnd)
++            }
++            TomlOperation::ReplaceValue { value } => {
++                self.compile_replace_value(file, query, value)
++            }
++            TomlOperation::DeleteSection => self.compile_delete_section(file, query),
++            TomlOperation::ReplaceKey { new_key } => self.compile_replace_key(file, query, new_key),
++        }
++    }
++
++    fn compile_insert(
++        &self,
++        file: PathBuf,
++        query: &TomlQuery,
++        text: &str,
++        position: &TomlPosition,
++    ) -> Result<Edit, TomlEditError> {
++        if query.key.is_some() {
++            return Err(TomlEditError::InvalidOperation(
++                "insert_section does not accept a key selector".to_string(),
++            ));
++        }
++        let section = query.section.as_ref().ok_or_else(|| {
++            TomlEditError::InvalidQuery("insert_section requires section".to_string())
++        })?;
++        let path = parse_path(section)?;
++        let section_label = path_display(&path);
++        let table_exists = self.find_table(&path)?.is_some();
++        self.enforce_constraints(table_exists, query.constraints, &section_label)?;
++        if table_exists {
++            return Err(TomlEditError::AlreadyPresent(section_label));
++        }
++        if text.trim().is_empty() {
++            return Err(TomlEditError::InvalidOperation(
++                "insert_section text is empty".to_string(),
++            ));
++        }
++        let offset = self.resolve_position(position)?;
++        let normalized = self.normalize_insert_text(offset, text);
++        self.build_edit(file, offset..offset, normalized)
++    }
++
++    fn compile_delete_section(
++        &self,
++        file: PathBuf,
++        query: &TomlQuery,
++    ) -> Result<Edit, TomlEditError> {
++        if query.key.is_some() {
++            return Err(TomlEditError::InvalidOperation(
++                "delete_section does not accept a key selector".to_string(),
++            ));
++        }
++        let section = query.section.as_ref().ok_or_else(|| {
++            TomlEditError::InvalidQuery("delete_section requires section".to_string())
++        })?;
++        let path = parse_path(section)?;
++        let section_label = path_display(&path);
++        let matches = self.matching_sections(&path);
++        let exists = !matches.is_empty();
++        self.enforce_constraints(exists, query.constraints, &section_label)?;
++        if matches.is_empty() {
++            return Err(TomlEditError::AlreadyAbsent(section_label));
++        }
++        if matches.len() > 1 {
++            return Err(TomlEditError::SectionAmbiguous {
++                section: section_label,
++                matches: matches.len(),
++            });
++        }
++        let section = matches[0];
++        self.build_edit(file, section.section.clone(), String::new())
++    }
++
++    fn compile_replace_value(
++        &self,
++        file: PathBuf,
++        query: &TomlQuery,
++        value: &str,
++    ) -> Result<Edit, TomlEditError> {
++        let key = query.key.as_ref().ok_or_else(|| {
++            TomlEditError::InvalidQuery("replace_value requires key".to_string())
++        })?;
++        let (table, section_label) = self.resolve_table_for_key(query)?;
++        let item = match table.get(key) {
++            Some(item) => item,
++            None => {
++                let label = format_key_target(&section_label, key);
++                self.enforce_constraints(false, query.constraints, &label)?;
++                return Err(TomlEditError::AlreadyAbsent(label));
++            }
++        };
++        let value_span = match item {
++            Item::Value(value_item) => value_item
++                .span()
++                .ok_or_else(|| TomlEditError::MissingSpan(format!("value {key}")))?,
++            _ => {
++                let label = format_key_target(&section_label, key);
++                return Err(TomlEditError::KeyNotValue {
++                    key: key.to_string(),
++                    section: section_label,
++                });
++            }
++        };
++        let label = format_key_target(&section_label, key);
++        self.enforce_constraints(true, query.constraints, &label)?;
++        self.build_edit(file, value_span, value.to_string())
++    }
++
++    fn compile_replace_key(
++        &self,
++        file: PathBuf,
++        query: &TomlQuery,
++        new_key: &str,
++    ) -> Result<Edit, TomlEditError> {
++        let key = query.key.as_ref().ok_or_else(|| {
++            TomlEditError::InvalidQuery("replace_key requires key".to_string())
++        })?;
++        let (table, section_label) = self.resolve_table_for_key(query)?;
++        let _item = match table.get(key) {
++            Some(item) => item,
++            None => {
++                let label = format_key_target(&section_label, key);
++                self.enforce_constraints(false, query.constraints, &label)?;
++                return Err(TomlEditError::AlreadyAbsent(label));
++            }
++        };
++        let key_span = table
++            .key(key)
++            .and_then(|k| k.span())
++            .ok_or_else(|| TomlEditError::MissingSpan(format!("key {key}")))?;
++        let label = format_key_target(&section_label, key);
++        self.enforce_constraints(true, query.constraints, &label)?;
++        let replacement = normalize_key(new_key)?;
++        self.build_edit(file, key_span, replacement)
++    }
++
++    fn resolve_table_for_key<'a>(
++        &'a self,
++        query: &TomlQuery,
++    ) -> Result<(&'a Table, String), TomlEditError> {
++        let path = match &query.section {
++            Some(section) => parse_path(section)?,
++            None => Vec::new(),
++        };
++        let section_label = if path.is_empty() {
++            "<root>".to_string()
++        } else {
++            path_display(&path)
++        };
++        let table = if path.is_empty() {
++            self.document.as_table()
++        } else {
++            match self.find_table(&path)? {
++                Some(table) => table,
++                None => {
++                    self.enforce_constraints(false, query.constraints, &section_label)?;
++                    return Err(TomlEditError::AlreadyAbsent(section_label));
++                }
++            }
++        };
++        Ok((table, section_label))
++    }
++
++    fn resolve_position(&self, position: &TomlPosition) -> Result<usize, TomlEditError> {
++        match position {
++            TomlPosition::AtBeginning => Ok(0),
++            TomlPosition::AtEnd => Ok(self.source.len()),
++            TomlPosition::BeforeSection(section) => {
++                let path = parse_path(section)?;
++                let section_label = path_display(&path);
++                let matches = self.matching_sections(&path);
++                if matches.is_empty() {
++                    return Err(TomlEditError::SectionNotFound(section_label));
++                }
++                if matches.len() > 1 {
++                    return Err(TomlEditError::SectionAmbiguous {
++                        section: section_label,
++                        matches: matches.len(),
++                    });
++                }
++                Ok(matches[0].header.start)
++            }
++            TomlPosition::AfterSection(section) => {
++                let path = parse_path(section)?;
++                let section_label = path_display(&path);
++                let matches = self.matching_sections(&path);
++                if matches.is_empty() {
++                    return Err(TomlEditError::SectionNotFound(section_label));
++                }
++                if matches.len() > 1 {
++                    return Err(TomlEditError::SectionAmbiguous {
++                        section: section_label,
++                        matches: matches.len(),
++                    });
++                }
++                Ok(matches[0].section.end)
++            }
++        }
++    }
++
++    fn matching_sections(&self, path: &[String]) -> Vec<&SectionInfo> {
++        self.sections
++            .iter()
++            .filter(|section| section.path == path)
++            .collect()
++    }
++
++    fn find_table<'a>(&'a self, path: &[String]) -> Result<Option<&'a Table>, TomlEditError> {
++        let mut table = self.document.as_table();
++        if path.is_empty() {
++            return Ok(Some(table));
++        }
++        for segment in path {
++            let item = match table.get(segment) {
++                Some(item) => item,
++                None => return Ok(None),
++            };
++            match item {
++                Item::Table(next) => {
++                    table = next;
++                }
++                Item::ArrayOfTables(array) => {
++                    if array.len() != 1 {
++                        return Err(TomlEditError::SectionAmbiguous {
++                            section: path_display(path),
++                            matches: array.len(),
++                        });
++                    }
++                    table = array
++                        .get(0)
++                        .ok_or_else(|| TomlEditError::SectionNotFound(path_display(path)))?;
++                }
++                _ => {
++                    return Err(TomlEditError::InvalidOperation(format!(
++                        "{} is not a table",
++                        path_display(path)
++                    )))
++                }
++            }
++        }
++        Ok(Some(table))
++    }
++
++    fn build_edit(
++        &self,
++        file: PathBuf,
++        range: Range<usize>,
++        new_text: String,
++    ) -> Result<Edit, TomlEditError> {
++        let expected = self
++            .source
++            .get(range.clone())
++            .ok_or_else(|| TomlEditError::SpanOutOfBounds(format!("{range:?}")))?;
++        Ok(Edit::new(
++            file,
++            range.start,
++            range.end,
++            new_text,
++            expected,
++        ))
++    }
++
++    fn enforce_constraints(
++        &self,
++        exists: bool,
++        constraints: TomlConstraints,
++        target: &str,
++    ) -> Result<(), TomlEditError> {
++        if constraints.ensure_absent && exists {
++            return Err(TomlEditError::ConstraintViolation {
++                constraint: "ensure_absent".to_string(),
++                target: target.to_string(),
++            });
++        }
++        if constraints.ensure_present && !exists {
++            return Err(TomlEditError::ConstraintViolation {
++                constraint: "ensure_present".to_string(),
++                target: target.to_string(),
++            });
++        }
++        Ok(())
++    }
++
++    fn normalize_insert_text(&self, offset: usize, text: &str) -> String {
++        let mut normalized = text.to_string();
++        if offset > 0 {
++            if let Some(before) = self.source.as_bytes().get(offset - 1) {
++                if *before != b'\n' && !normalized.starts_with('\n') {
++                    normalized.insert(0, '\n');
++                }
++            }
++        }
++        if offset < self.source.len() {
++            if let Some(after) = self.source.as_bytes().get(offset) {
++                if *after != b'\n' && !normalized.ends_with('\n') {
++                    normalized.push('\n');
++                }
++            }
++        } else if !normalized.ends_with('\n') {
++            normalized.push('\n');
++        }
++        normalized
++    }
++}
++
++fn parse_path(path: &str) -> Result<Vec<String>, TomlEditError> {
++    let trimmed = path.trim();
++    if trimmed.is_empty() {
++        return Err(TomlEditError::InvalidQuery(
++            "empty section path".to_string(),
++        ));
++    }
++    let keys = toml_edit::Key::parse(trimmed)?;
++    Ok(keys.into_iter().map(|key| key.get().to_string()).collect())
++}
++
++fn build_sections(document: &Document<String>) -> Vec<SectionInfo> {
++    let mut headers = Vec::new();
++    let mut path = Vec::new();
++    collect_sections(document.as_table(), &mut path, &mut headers);
++    headers.sort_by_key(|header| header.position);
++    let doc_len = document.raw().len();
++    let mut sections = Vec::new();
++    for index in 0..headers.len() {
++        let header = &headers[index];
++        let end = headers
++            .get(index + 1)
++            .map(|next| next.header.start)
++            .unwrap_or(doc_len);
++        sections.push(SectionInfo {
++            path: header.path.clone(),
++            header: header.header.clone(),
++            section: header.header.start..end,
++            position: header.position,
++        });
++    }
++    sections
++}
++
++fn collect_sections(table: &Table, path: &mut Vec<String>, headers: &mut Vec<SectionHeader>) {
++    for (key, item) in table.iter() {
++        let key_name = key.get().to_string();
++        match item {
++            Item::Table(child) => {
++                path.push(key_name);
++                push_header(child, path, headers);
++                collect_sections(child, path, headers);
++                path.pop();
++            }
++            Item::ArrayOfTables(array) => {
++                path.push(key_name);
++                for child in array.iter() {
++                    push_header(child, path, headers);
++                    collect_sections(child, path, headers);
++                }
++                path.pop();
++            }
++            _ => {}
++        }
++    }
++}
++
++fn push_header(table: &Table, path: &[String], headers: &mut Vec<SectionHeader>) {
++    if table.is_implicit() {
++        return;
++    }
++    let position = match table.position() {
++        Some(position) => position,
++        None => return,
++    };
++    let header = match table.span() {
++        Some(span) => span,
++        None => return,
++    };
++    headers.push(SectionHeader {
++        path: path.to_vec(),
++        header,
++        position,
++    });
++}
++
++fn path_display(path: &[String]) -> String {
++    if path.is_empty() {
++        "<root>".to_string()
++    } else {
++        path.join(".")
++    }
++}
++
++fn format_key_target(section_label: &str, key: &str) -> String {
++    if section_label == "<root>" {
++        key.to_string()
++    } else {
++        format!("{section_label}.{key}")
++    }
++}
++
++fn normalize_key(raw: &str) -> Result<String, TomlEditError> {
++    let trimmed = raw.trim();
++    if trimmed.is_empty() {
++        return Err(TomlEditError::InvalidOperation(
++            "replacement key is empty".to_string(),
++        ));
++    }
++    Ok(trimmed.to_string())
++}

@@ -1,0 +1,14 @@
+[package]
+name = "demo"
+version = "0.1.0"
+
+# Existing profiles
+[profile.release]
+opt-level = 3
+
+[profile.ci-test]
+inherits = "release"
+opt-level = 2
+
+[profile.dev]
+opt-level = 0
