@@ -72,7 +72,7 @@ text = "fn hello() { println!(\"Modified\"); }"
 #[test]
 fn test_apply_help() {
     let output = Command::new("cargo")
-        .args(&["run", "--quiet", "--", "apply", "--help"])
+        .args(["run", "--quiet", "--", "apply", "--help"])
         .output()
         .unwrap();
 
@@ -86,7 +86,7 @@ fn test_apply_basic() {
     let workspace = setup_test_workspace();
 
     let output = Command::new("cargo")
-        .args(&[
+        .args([
             "run",
             "--quiet",
             "--",
@@ -115,7 +115,7 @@ fn test_apply_idempotent() {
 
     // Apply once
     let _output1 = Command::new("cargo")
-        .args(&[
+        .args([
             "run",
             "--quiet",
             "--",
@@ -128,7 +128,7 @@ fn test_apply_idempotent() {
 
     // Apply again - should report already applied (if first one succeeded)
     let output = Command::new("cargo")
-        .args(&[
+        .args([
             "run",
             "--quiet",
             "--",
@@ -150,7 +150,7 @@ fn test_apply_dry_run() {
     let _original_content = fs::read_to_string(workspace.path().join("test.rs")).unwrap();
 
     let output = Command::new("cargo")
-        .args(&[
+        .args([
             "run",
             "--quiet",
             "--",
@@ -176,7 +176,7 @@ fn test_apply_with_diff() {
     let workspace = setup_test_workspace();
 
     let output = Command::new("cargo")
-        .args(&[
+        .args([
             "run",
             "--quiet",
             "--",
@@ -198,7 +198,7 @@ fn test_status_command() {
     let workspace = setup_test_workspace();
 
     let output = Command::new("cargo")
-        .args(&[
+        .args([
             "run",
             "--quiet",
             "--",
@@ -222,7 +222,7 @@ fn test_verify_command() {
 
     // First apply patches
     Command::new("cargo")
-        .args(&[
+        .args([
             "run",
             "--quiet",
             "--",
@@ -235,7 +235,7 @@ fn test_verify_command() {
 
     // Then verify
     let output = Command::new("cargo")
-        .args(&[
+        .args([
             "run",
             "--quiet",
             "--",
@@ -255,7 +255,7 @@ fn test_verify_command() {
 #[test]
 fn test_missing_workspace() {
     let output = Command::new("cargo")
-        .args(&[
+        .args([
             "run",
             "--quiet",
             "--",

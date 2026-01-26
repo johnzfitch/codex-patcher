@@ -314,7 +314,7 @@ fn apply_structural_patch(
         _ => {
             return Err(ApplicationError::TomlOperation {
                 file: file_path.to_path_buf(),
-                reason: format!("unsupported operation for structural patch"),
+                reason: "unsupported operation for structural patch".to_string(),
             });
         }
     };
