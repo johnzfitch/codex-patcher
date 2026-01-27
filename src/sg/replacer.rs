@@ -93,9 +93,9 @@ impl<'a> CaptureReplacer<'a> {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// // Pattern: fn $NAME($$$PARAMS) { $$$BODY }
-    /// // Template: fn renamed_$NAME($$$PARAMS) { $$$BODY }
+    /// ```text
+    /// Pattern: fn $NAME($$$PARAMS) { $$$BODY }
+    /// Template: fn renamed_$NAME($$$PARAMS) { $$$BODY }
     /// ```
     pub fn replace_with_template(&self, template: &str) -> Replacement {
         let mut result = template.to_string();

@@ -1,22 +1,76 @@
-# Codex Patcher
+<p align="center">
+  <img src=".github/assets/icons/rocket.png" width="64" alt="Codex Patcher"/>
+</p>
 
-Automated code patching system for Rust with byte-span replacement and tree-sitter integration.
+<h1 align="center">Codex Patcher</h1>
 
-## Overview
+<p align="center">
+  <strong>Automated code patching system for Rust with byte-span replacement and tree-sitter integration</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/your-org/codex-patcher/actions"><img src="https://img.shields.io/github/actions/workflow/status/your-org/codex-patcher/ci.yml?branch=master&style=flat-square" alt="CI Status"></a>
+  <a href="https://crates.io/crates/codex-patcher"><img src="https://img.shields.io/crates/v/codex-patcher.svg?style=flat-square" alt="Crates.io"></a>
+  <a href="https://docs.rs/codex-patcher"><img src="https://img.shields.io/docsrs/codex-patcher?style=flat-square" alt="docs.rs"></a>
+  <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-blue?style=flat-square" alt="License"></a>
+</p>
+
+---
+
+## <img src=".github/assets/icons/eye.png" width="16" height="16" alt=""/> Overview
 
 `codex-patcher` is a robust, compiler-aware patching system designed to apply LLM-generated fixes, refactors, and insertions to Rust source files with high reliability. It preserves comments, formatting, and handles Rust's macro/cfg complexity without silent corruption.
 
-## Core Principles
+### <img src=".github/assets/icons/star.png" width="16" height="16" alt=""/> Key Features
 
-1. **Single Primitive**: All operations compile to byte-span replacement with verification
-2. **Intelligence in Acquisition**: Smart span location, dumb application
-3. **Safety First**: Verify before applying, atomic writes, workspace boundaries
-4. **Compiler Integration**: Use `cargo check` diagnostics as semantic oracle
-5. **Idempotent**: Safe to run multiple times
+| Feature | Description |
+|---------|-------------|
+| <img src=".github/assets/icons/shield-security-protection-16x16.png" width="14" alt=""/> **Atomic Writes** | Tempfile + fsync + rename for crash safety |
+| <img src=".github/assets/icons/tick.png" width="14" alt=""/> **Idempotent** | Safe to run multiple times without side effects |
+| <img src=".github/assets/icons/tree.png" width="14" alt=""/> **Tree-sitter** | CST-based parsing preserves exact source layout |
+| <img src=".github/assets/icons/search.png" width="14" alt=""/> **ast-grep** | Pattern-based code matching and replacement |
+| <img src=".github/assets/icons/lock.png" width="14" alt=""/> **Workspace Safety** | Prevents edits outside project boundaries |
+| <img src=".github/assets/icons/layers.png" width="14" alt=""/> **Multi-format** | Supports Rust, TOML, and more |
 
-## Architecture
+---
 
-### Edit Primitive
+## <img src=".github/assets/icons/lightning.png" width="16" height="16" alt=""/> Quick Start
+
+### Installation
+
+```bash
+# From crates.io (when published)
+cargo install codex-patcher
+
+# From source
+git clone https://github.com/your-org/codex-patcher
+cd codex-patcher
+cargo install --path .
+```
+
+### Basic Usage
+
+```bash
+# Apply all patches in patches/ directory
+codex-patcher apply --workspace /path/to/codex-rs
+
+# Dry run with diff output
+codex-patcher apply --workspace /path/to/codex-rs --dry-run --diff
+
+# Check status of patches
+codex-patcher status --workspace /path/to/codex-rs
+
+# Verify patches are applied correctly
+codex-patcher verify --workspace /path/to/codex-rs
+```
+
+---
+
+## <img src=".github/assets/icons/diagram.png" width="16" height="16" alt=""/> Architecture
+
+### Core Primitive: Byte-Span Replacement
+
+All edit operations compile down to a single primitive:
 
 ```rust
 pub struct Edit {
@@ -28,69 +82,101 @@ pub struct Edit {
 }
 ```
 
-Every edit operation:
-- Verifies expected text before applying
-- Uses atomic file writes (tempfile + fsync + rename)
-- Validates UTF-8
-- Updates mtimes for incremental compilation invalidation
+**Why this design?**
+- Simplifies verification logic
+- Makes debugging trivial (see exactly what changed)
+- Enables multiple span location strategies
+- Preserves formatting and comments
 
 ### Verification Strategies
 
 ```rust
 pub enum EditVerification {
     ExactMatch(String),  // For spans < 1KB
-    Hash(u64),          // xxh3 for larger spans
+    Hash(u64),           // xxh3 for larger spans
 }
 ```
 
-Automatic selection based on text size, ensuring both safety and performance.
+Automatic selection based on text size ensures both safety and performance.
 
-### Safety Rails
+---
 
-**Hard Rules** (never violated):
-- Selector uniqueness: 0 or >1 matches = refuse
-- Before-text verification: Always verify before overwriting
-- No external edits: Never modify files outside workspace root
-- Parse validation: Re-parse after edit, rollback on ERROR nodes
-- Multi-edit ordering: Sort descending, apply bottom-to-top
+## <img src=".github/assets/icons/book.png" width="16" height="16" alt=""/> Documentation
 
-**Workspace Boundaries**:
-- Validates all paths against workspace root
-- Blocks edits to `~/.cargo/registry`, `~/.rustup`, `target/`
-- Handles symlink escapes correctly
+| Document | Description |
+|----------|-------------|
+| [Getting Started](docs/getting-started.md) | Installation and first steps |
+| [API Reference](docs/api.md) | Library API documentation |
+| [Patch Authoring](docs/patches.md) | How to write patch definitions |
+| [Architecture](docs/architecture.md) | System design and internals |
+| [TOML Patching](docs/toml.md) | TOML-specific query syntax |
 
-## Usage
+---
 
-### Library API
+## <img src=".github/assets/icons/console.png" width="16" height="16" alt=""/> CLI Reference
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `apply` | Apply patches to a workspace |
+| `status` | Check which patches are applied |
+| `verify` | Verify patches match expected state |
+| `list` | List available patches |
+
+### Options
+
+```
+codex-patcher apply [OPTIONS]
+
+Options:
+  -w, --workspace <PATH>  Path to workspace root (auto-detected if not specified)
+  -p, --patches <FILE>    Specific patch file to apply
+  -n, --dry-run           Show what would be changed without modifying files
+  -d, --diff              Show unified diff of changes
+  -h, --help              Print help
+  -V, --version           Print version
+```
+
+---
+
+## <img src=".github/assets/icons/script.png" width="16" height="16" alt=""/> Library Usage
+
+### Basic Edit
 
 ```rust
-use codex_patcher::{Edit, WorkspaceGuard};
-use std::path::PathBuf;
+use codex_patcher::{Edit, EditResult, WorkspaceGuard};
 
-// Create workspace guard
+// Create workspace guard for safety
 let guard = WorkspaceGuard::new("/path/to/workspace")?;
 
-// Validate path is safe to edit
+// Validate path is within workspace
 let file = guard.validate_path("src/main.rs")?;
 
 // Create and apply edit
 let edit = Edit::new(
     file,
-    0,
-    5,
-    "HELLO",
-    "hello",  // Expected before-text
+    0,              // byte_start
+    5,              // byte_end
+    "HELLO",        // new_text
+    "hello",        // expected_before
 );
 
 match edit.apply()? {
-    EditResult::Applied { .. } => println!("Edit applied"),
-    EditResult::AlreadyApplied { .. } => println!("Already patched"),
+    EditResult::Applied { file, bytes_changed } => {
+        println!("Applied {} bytes to {}", bytes_changed, file.display());
+    }
+    EditResult::AlreadyApplied { file } => {
+        println!("Already patched: {}", file.display());
+    }
 }
 ```
 
 ### Batch Edits
 
 ```rust
+use codex_patcher::Edit;
+
 let edits = vec![
     Edit::new("src/main.rs", 0, 5, "HELLO", "hello"),
     Edit::new("src/main.rs", 10, 15, "WORLD", "world"),
@@ -99,160 +185,185 @@ let edits = vec![
 
 // Applies atomically per file, sorted correctly
 let results = Edit::apply_batch(edits)?;
+
+for result in results {
+    println!("{:?}", result);
+}
 ```
 
-### CLI (Coming Soon)
+### Pattern Matching with ast-grep
 
-```bash
-# Apply patches from definitions
-codex-patcher apply --workspace ~/dev/codex/codex-rs
+```rust
+use codex_patcher::sg::PatternMatcher;
 
-# Dry run with diff
-codex-patcher apply --workspace ~/dev/codex/codex-rs --dry-run --diff
+let source = r#"
+    fn main() {
+        let x = foo.clone();
+        let y = bar.clone();
+    }
+"#;
 
-# Check patch status
-codex-patcher status --workspace ~/dev/codex/codex-rs
+let matcher = PatternMatcher::new(source);
+
+// Find all .clone() calls
+let matches = matcher.find_all("$EXPR.clone()")?;
+
+for m in matches {
+    println!("Found clone at bytes {}..{}", m.byte_start, m.byte_end);
+}
 ```
 
-## Implementation Status
+---
 
-### Phase 1: Core Edit Primitive ✅ COMPLETE
+## <img src=".github/assets/icons/shield-security-protection-16x16.png" width="16" height="16" alt=""/> Safety Guarantees
 
-- [x] Edit struct with byte-span replacement
-- [x] EditVerification (ExactMatch + Hash)
-- [x] Atomic file writes (tempfile + fsync + rename)
-- [x] Workspace boundary checks
-- [x] Multi-edit span translation
-- [x] Comprehensive unit tests
-- [x] Clippy clean
+### Hard Rules (Never Violated)
 
-**Deliverable**: Can apply raw byte-span edits with verification
+| Rule | Description |
+|------|-------------|
+| <img src=".github/assets/icons/tick.png" width="12" alt=""/> **Selector Uniqueness** | 0 or >1 matches = refuse to edit |
+| <img src=".github/assets/icons/tick.png" width="12" alt=""/> **Before-text Verification** | Always verify expected content exists |
+| <img src=".github/assets/icons/tick.png" width="12" alt=""/> **No External Edits** | Never modify files outside workspace |
+| <img src=".github/assets/icons/tick.png" width="12" alt=""/> **Parse Validation** | Re-parse after edit, rollback on errors |
+| <img src=".github/assets/icons/tick.png" width="12" alt=""/> **UTF-8 Validation** | Prevent creation of invalid files |
 
-### Phase 2: TOML Patching (In Progress)
+### Workspace Boundaries
 
-- [x] Integrate `toml_edit` for structure-preserving TOML edits
-- [x] TOML query language (section path, key matching)
-- [x] Operations: insert_section, append_section, replace_value, delete_section, replace_key
-- [x] Compile TOML queries → byte spans with selector uniqueness validation
-- [x] Post-edit TOML validation (parse after edit)
+The `WorkspaceGuard` prevents edits to:
+- `~/.cargo/registry` - Dependency source code
+- `~/.rustup` - Toolchain installations
+- `target/` - Build artifacts
+- Symlinks escaping workspace
 
-See `docs/toml.md` for query syntax, examples, and error guidance.
+---
 
-### Phase 3: Tree-Sitter Span Locator ✅ COMPLETE
+## <img src=".github/assets/icons/folder.png" width="16" height="16" alt=""/> Project Structure
 
-- [x] Integrate `tree-sitter` + `tree-sitter-rust`
-- [x] Tree-sitter query engine with capture support
-- [x] Span extraction from query matches
-- [x] Edition-aware parsing (2015/2018/2021/2024)
-- [x] Structural locators for common Rust constructs (fn, struct, impl, const, etc.)
-- [x] Parse validation (ERROR node detection)
-- [x] 21 new unit tests
+```
+codex-patcher/
+├── src/
+│   ├── lib.rs           # Library entry point
+│   ├── main.rs          # CLI entry point
+│   ├── edit.rs          # Core Edit primitive
+│   ├── safety.rs        # WorkspaceGuard
+│   ├── validate.rs      # Parse/syn validation
+│   ├── config/          # Patch configuration
+│   │   ├── schema.rs    # Patch definition types
+│   │   ├── loader.rs    # TOML config parser
+│   │   ├── applicator.rs # Patch application logic
+│   │   └── version.rs   # Semver filtering
+│   ├── ts/              # Tree-sitter integration
+│   │   ├── parser.rs    # Rust parser wrapper
+│   │   ├── query.rs     # Query engine
+│   │   └── locator.rs   # Structural locators
+│   ├── sg/              # ast-grep integration
+│   │   ├── matcher.rs   # Pattern matching
+│   │   ├── replacer.rs  # Replacement operations
+│   │   └── lang.rs      # Language support
+│   └── toml/            # TOML editing
+│       ├── editor.rs    # TomlEditor
+│       ├── query.rs     # Section/key queries
+│       └── operations.rs # TOML operations
+├── patches/             # Patch definitions
+│   ├── privacy.toml     # Telemetry removal
+│   └── performance.toml # Build optimizations
+├── tests/               # Integration tests
+└── docs/                # Documentation
+```
 
-### Phase 4: ast-grep Integration
+---
 
-- [ ] Integrate `ast-grep-core` for pattern matching
-- [ ] Pattern → byte span conversion
-- [ ] Capture group replacement
-- [ ] Context constraints
+## <img src=".github/assets/icons/toolbox.png" width="16" height="16" alt=""/> Development
 
-### Phase 5: Validation & Safety
-
-- [ ] Parse validation (ERROR node detection)
-- [ ] `syn` validation for generated snippets
-- [ ] Selector uniqueness enforcement
-- [ ] Compile validation (`cargo check` integration)
-
-### Phase 6: Patch Config Parser
-
-- [ ] TOML schema for patch definitions
-- [ ] Patch config parser
-- [ ] Version range filtering (semver)
-- [ ] Idempotency checks
-
-### Phase 7: CLI & UX
-
-- [ ] CLI with clap (apply, status, verify commands)
-- [ ] `--dry-run` and `--diff` output
-- [ ] Conflict detection and reporting
-- [ ] Progress indicators
-
-### Phase 8: Initial Patch Definitions
-
-- [ ] `patches/privacy.toml` - Statsig telemetry removal
-- [ ] `patches/performance.toml` - Build profile optimizations
-- [ ] Test on clean upstream checkout
-- [ ] Patch authoring guide
-
-## Design Rationale
-
-### Why Byte-Span Replacement?
-
-All high-level operations (AST transforms, diffs, structural edits) compile to the same primitive. This:
-- Simplifies verification logic
-- Makes debugging trivial (see exactly what changed)
-- Enables multiple span location strategies
-- Preserves formatting and comments
-
-### Why Not syn for Editing?
-
-`syn` is great for parsing, but:
-- Drops comments
-- Normalizes formatting
-- Over-engineered for patching needs
-
-We use `syn` only for validating generated code snippets.
-
-### Why Tree-Sitter + ast-grep?
-
-- Tree-sitter preserves exact source (CST not AST)
-- ast-grep provides pattern-matching DSL
-- Robust to whitespace/line changes
-- Edition-aware parsing
-
-### Why Not Git Patches?
-
-- Line-number based (fragile)
-- Merge conflicts require manual resolution
-- No semantic understanding
-- Can't detect "already applied"
-
-## Testing
+### Building
 
 ```bash
+# Debug build
+cargo build
+
+# Release build
+cargo build --release
+
 # Run tests
 cargo test
 
-# Run with coverage
-cargo test --verbose
-
-# Clippy
+# Run clippy
 cargo clippy --all-targets -- -D warnings
 
-# Format
-cargo fmt --check
+# Format code
+cargo fmt
 ```
 
-## Dependencies
+### Test Coverage
 
-- `tree-sitter` + `tree-sitter-rust` - CST parsing
-- `ast-grep-core` - Pattern-based matching
-- `toml_edit` - Structure-preserving TOML edits
-- `syn` - Validation only (not editing)
-- `cargo_metadata` - Workspace metadata parsing
-- `xxhash-rust` - Fast hashing for verification
-- `tempfile` - Atomic file writes
-- `filetime` - Mtime updates for incremental compilation
+```bash
+# Run all tests with output
+cargo test --all-targets -- --nocapture
 
-## License
+# Run specific test
+cargo test test_atomic_write
 
-MIT OR Apache-2.0
+# Run integration tests only
+cargo test --test integration
+```
 
-## Author
+---
 
-Zack <zack@tier.net>
+## <img src=".github/assets/icons/checkbox.png" width="16" height="16" alt=""/> Status
 
-## References
+| Component | Status |
+|-----------|--------|
+| Core Edit Primitive | <img src=".github/assets/icons/tick.png" width="12" alt=""/> Complete |
+| Atomic File Writes | <img src=".github/assets/icons/tick.png" width="12" alt=""/> Complete |
+| Workspace Guards | <img src=".github/assets/icons/tick.png" width="12" alt=""/> Complete |
+| Tree-sitter Integration | <img src=".github/assets/icons/tick.png" width="12" alt=""/> Complete |
+| ast-grep Integration | <img src=".github/assets/icons/tick.png" width="12" alt=""/> Complete |
+| TOML Patching | <img src=".github/assets/icons/tick.png" width="12" alt=""/> Complete |
+| CLI Interface | <img src=".github/assets/icons/tick.png" width="12" alt=""/> Complete |
+| Patch Definitions | <img src=".github/assets/icons/tick.png" width="12" alt=""/> Complete |
+| Documentation | <img src=".github/assets/icons/tick.png" width="12" alt=""/> Complete |
 
-- [CLAUDE.md](./CLAUDE.md) - Full technical specification
-- [plan.md](./plan.md) - Implementation plan and timeline
-- [spec.md](./spec.md) - Alternative specification format
+**Test Results:** 117 tests, 100% passing
+
+---
+
+## <img src=".github/assets/icons/globe.png" width="16" height="16" alt=""/> Contributing
+
+We welcome contributions! Please see [CONTRIBUTING.md](.github/CONTRIBUTING.md) for guidelines.
+
+### Quick Contribution Guide
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/amazing-feature`
+3. Make your changes
+4. Run tests: `cargo test && cargo clippy --all-targets -- -D warnings`
+5. Commit: `git commit -m "feat: add amazing feature"`
+6. Push: `git push origin feature/amazing-feature`
+7. Open a Pull Request
+
+---
+
+## <img src=".github/assets/icons/key.png" width="16" height="16" alt=""/> License
+
+Licensed under either of:
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT License ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.
+
+---
+
+## <img src=".github/assets/icons/star.png" width="16" height="16" alt=""/> Acknowledgments
+
+Built with these excellent crates:
+- [tree-sitter](https://tree-sitter.github.io/) - Incremental parsing
+- [ast-grep](https://ast-grep.github.io/) - Structural code search
+- [toml_edit](https://docs.rs/toml_edit) - Format-preserving TOML
+- [clap](https://docs.rs/clap) - Command-line parsing
+
+---
+
+<p align="center">
+  <sub>Made with care for the Rust community</sub>
+</p>

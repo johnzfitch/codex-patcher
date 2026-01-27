@@ -4,8 +4,10 @@ use codex_patcher::config::{apply_patches, load_from_path, ApplicationError, Pat
 use colored::Colorize;
 use similar::{ChangeTag, TextDiff};
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use walkdir::WalkDir;
 
 #[derive(Parser)]
@@ -21,9 +23,9 @@ struct Cli {
 enum Commands {
     /// Apply patches to a workspace
     Apply {
-        /// Path to workspace root
+        /// Path to workspace root (auto-detected if not specified)
         #[arg(short, long)]
-        workspace: PathBuf,
+        workspace: Option<PathBuf>,
 
         /// Specific patch file to apply (otherwise applies all in patches/)
         #[arg(short, long)]
@@ -40,16 +42,16 @@ enum Commands {
 
     /// Check status of patches without applying
     Status {
-        /// Path to workspace root
+        /// Path to workspace root (auto-detected if not specified)
         #[arg(short, long)]
-        workspace: PathBuf,
+        workspace: Option<PathBuf>,
     },
 
     /// Verify patches are applicable to current workspace
     Verify {
-        /// Path to workspace root
+        /// Path to workspace root (auto-detected if not specified)
         #[arg(short, long)]
-        workspace: PathBuf,
+        workspace: Option<PathBuf>,
     },
 
     /// List available patches and their version constraints
@@ -101,6 +103,116 @@ fn discover_patch_files(workspace: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+/// Resolve workspace path using multiple detection strategies
+///
+/// Priority order:
+/// 1. Explicit --workspace flag
+/// 2. CODEX_WORKSPACE environment variable
+/// 3. Auto-detect from current directory
+/// 4. Git remote detection
+fn resolve_workspace(cli_workspace: Option<PathBuf>) -> Result<PathBuf> {
+    // 1. Explicit flag (highest priority)
+    if let Some(path) = cli_workspace {
+        return Ok(path.canonicalize()?);
+    }
+
+    // 2. Environment variable
+    if let Ok(env_path) = env::var("CODEX_WORKSPACE") {
+        let path = PathBuf::from(&env_path);
+        if path.exists() {
+            return Ok(path.canonicalize()?);
+        }
+        eprintln!(
+            "{}",
+            format!(
+                "Warning: CODEX_WORKSPACE is set but path doesn't exist: {}",
+                env_path
+            )
+            .yellow()
+        );
+    }
+
+    // 3. Auto-detect from current directory
+    if let Some(path) = auto_detect_workspace() {
+        println!("{}", format!("Auto-detected workspace: {}", path.display()).dimmed());
+        return Ok(path);
+    }
+
+    // 4. Git remote detection
+    if let Some(path) = find_codex_via_git() {
+        println!(
+            "{}",
+            format!("Found Codex workspace via git: {}", path.display()).dimmed()
+        );
+        return Ok(path);
+    }
+
+    // 5. Helpful error with multiple solutions
+    anyhow::bail!(
+        "{}\n{}\n  {}\n  {}\n  {}",
+        "Could not find Codex workspace.".red(),
+        "Try one of:".bold(),
+        "1. cd into your Codex directory: cd /path/to/codex/codex-rs && codex-patcher apply",
+        "2. Specify explicitly: codex-patcher apply --workspace /path/to/codex/codex-rs",
+        "3. Set environment variable: export CODEX_WORKSPACE=/path/to/codex/codex-rs"
+    )
+}
+
+/// Auto-detect workspace by walking up from current directory
+fn auto_detect_workspace() -> Option<PathBuf> {
+    let current = env::current_dir().ok()?;
+
+    // Walk up from current directory looking for Cargo.toml
+    for ancestor in current.ancestors() {
+        let cargo_toml = ancestor.join("Cargo.toml");
+        if !cargo_toml.exists() {
+            continue;
+        }
+
+        // Verify it's a Codex workspace by checking for expected directories
+        // Codex has: otel/, core/, cli/, etc.
+        let has_otel = ancestor.join("otel").exists();
+        let has_core = ancestor.join("core").exists();
+
+        if has_otel && has_core {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+
+    None
+}
+
+/// Find Codex workspace by checking git remotes
+fn find_codex_via_git() -> Option<PathBuf> {
+    let output = Command::new("git")
+        .args(["remote", "-v"])
+        .output()
+        .ok()?;
+
+    let remotes = String::from_utf8_lossy(&output.stdout);
+
+    // Check if any remote points to OpenAI's Codex repo
+    if remotes.contains("github.com/openai/codex") || remotes.contains("github.com:openai/codex")
+    {
+        let root_output = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .ok()?;
+
+        let git_root = String::from_utf8_lossy(&root_output.stdout)
+            .trim()
+            .to_string();
+
+        let codex_rs = PathBuf::from(git_root).join("codex-rs");
+
+        if codex_rs.exists() {
+            return Some(codex_rs);
+        }
+    }
+
+    None
+}
+
 /// Helper: Read workspace version from Cargo.toml
 fn read_workspace_version(workspace: &Path) -> Result<String> {
     use cargo_metadata::MetadataCommand;
@@ -149,19 +261,22 @@ fn display_diff(file: &Path, original: &str, modified: &str) {
 }
 
 fn cmd_apply(
-    workspace: PathBuf,
+    workspace: Option<PathBuf>,
     patches: Option<PathBuf>,
     dry_run: bool,
     show_diff: bool,
 ) -> Result<()> {
-    // 1. Determine patch files to load
+    // 1. Resolve workspace path
+    let workspace = resolve_workspace(workspace)?;
+
+    // 2. Determine patch files to load
     let patch_files = if let Some(path) = patches {
         vec![path]
     } else {
         discover_patch_files(&workspace)?
     };
 
-    // 2. Determine workspace version
+    // 3. Determine workspace version
     let workspace_version = read_workspace_version(&workspace)
         .unwrap_or_else(|_| {
             eprintln!("{}", "Warning: Could not read workspace version from Cargo.toml, using 0.0.0".yellow());
@@ -172,7 +287,7 @@ fn cmd_apply(
     println!("Version: {}", workspace_version);
     println!();
 
-    // 3. Load and apply each patch file
+    // 4. Load and apply each patch file
     let mut total_applied = 0;
     let mut total_already_applied = 0;
     let mut total_skipped = 0;
@@ -214,7 +329,7 @@ fn cmd_apply(
             apply_patches(&config, &workspace, &workspace_version)
         };
 
-        // 4. Report results
+        // 5. Report results
         for (patch_id, result) in results {
             match result {
                 Ok(PatchResult::Applied { ref file }) => {
@@ -279,7 +394,7 @@ fn cmd_apply(
         println!();
     }
 
-    // 5. Summary
+    // 6. Summary
     println!("{}", "Summary:".bold());
     println!("  {} applied", format!("{}", total_applied).green());
     println!("  {} already applied", format!("{}", total_already_applied).yellow());
@@ -293,11 +408,14 @@ fn cmd_apply(
     Ok(())
 }
 
-fn cmd_status(workspace: PathBuf) -> Result<()> {
-    // 1. Discover patch files
+fn cmd_status(workspace: Option<PathBuf>) -> Result<()> {
+    // 1. Resolve workspace path
+    let workspace = resolve_workspace(workspace)?;
+
+    // 2. Discover patch files
     let patch_files = discover_patch_files(&workspace)?;
 
-    // 2. Determine workspace version
+    // 3. Determine workspace version
     let workspace_version = read_workspace_version(&workspace)
         .unwrap_or_else(|_| {
             eprintln!("{}", "Warning: Could not read workspace version from Cargo.toml, using 0.0.0".yellow());
@@ -313,7 +431,7 @@ fn cmd_status(workspace: PathBuf) -> Result<()> {
     let mut not_applied = Vec::new();
     let mut skipped = Vec::new();
 
-    // 3. Check status of all patches
+    // 4. Check status of all patches
     // Note: We use apply_patches which is idempotent - it checks if patches
     // are already applied before applying them
     for patch_file in patch_files {
@@ -342,7 +460,7 @@ fn cmd_status(workspace: PathBuf) -> Result<()> {
         }
     }
 
-    // 4. Report grouped by status
+    // 5. Report grouped by status
     if !applied.is_empty() {
         println!("{} {} ({} patches)", "✓".green(), "APPLIED".green().bold(), applied.len());
         for id in &applied {
@@ -370,11 +488,14 @@ fn cmd_status(workspace: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn cmd_verify(workspace: PathBuf) -> Result<()> {
-    // 1. Discover patch files
+fn cmd_verify(workspace: Option<PathBuf>) -> Result<()> {
+    // 1. Resolve workspace path
+    let workspace = resolve_workspace(workspace)?;
+
+    // 2. Discover patch files
     let patch_files = discover_patch_files(&workspace)?;
 
-    // 2. Determine workspace version
+    // 3. Determine workspace version
     let workspace_version = read_workspace_version(&workspace)
         .unwrap_or_else(|_| {
             eprintln!("{}", "Warning: Could not read workspace version from Cargo.toml, using 0.0.0".yellow());
@@ -390,7 +511,7 @@ fn cmd_verify(workspace: PathBuf) -> Result<()> {
     let mut mismatch = 0;
     let mut skipped = 0;
 
-    // 3. Check verification for all patches
+    // 4. Check verification for all patches
     for patch_file in patch_files {
         let config = load_from_path(&patch_file)?;
         let results = apply_patches(&config, &workspace, &workspace_version);

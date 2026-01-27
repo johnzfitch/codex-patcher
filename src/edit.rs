@@ -9,6 +9,7 @@ use xxhash_rust::xxh3::xxh3_64;
 /// All high-level operations (AST transforms, structural edits, diffs) compile down
 /// to this single primitive. Intelligence lives in span acquisition, not application.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "Edit does nothing until apply() is called"]
 pub struct Edit {
     /// Path to the file to edit (absolute, workspace-relative resolved)
     pub file: PathBuf,
@@ -94,6 +95,7 @@ pub enum EditError {
 
 /// Result of applying an edit.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "EditResult should be checked for success/already-applied"]
 pub enum EditResult {
     /// Edit was successfully applied
     Applied { file: PathBuf, bytes_changed: usize },

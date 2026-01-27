@@ -1,0 +1,200 @@
+# =============================================================================
+# APPROVALS UI PATCHES - Simplified 4-Preset System with Ctrl+A Cycling
+# =============================================================================
+#
+# This patch adds a simplified approval preset system with 4 clear modes:
+# 1. Read Only - Can read files/code, no edits, no commands
+# 2. Edits Only - Can read and edit files, no command execution
+# 3. Sandboxed Agent - Full agent mode, sandboxed to workspace
+# 4. Full Access - No restrictions, full file and network access
+#
+# Keybind: Ctrl+A cycles through the 4 presets
+#
+# Version: Targets Codex rust-v0.91.0 and later
+# =============================================================================
+
+[meta]
+name = "approvals-ui-simplified"
+description = "4-preset approval system with Ctrl+A cycling"
+version_range = ">=0.91.0"
+workspace_relative = true
+
+# =============================================================================
+# Patch 1: Simplify Approval Presets to 4 Modes
+# =============================================================================
+
+[[patches]]
+id = "simplify-approval-presets"
+file = "common/src/approval_presets.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+pub fn builtin_approval_presets() -> Vec<ApprovalPreset> {
+    $$$
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub fn builtin_approval_presets() -> Vec<ApprovalPreset> {
+    vec![
+        ApprovalPreset {
+            id: "read-only",
+            label: "Read Only",
+            description: "Can read files and code. No edits, no commands.",
+            approval: AskForApproval::OnRequest,
+            sandbox: SandboxPolicy::ReadOnly,
+        },
+        ApprovalPreset {
+            id: "edits-only",
+            label: "Edits Only",
+            description: "Can read and edit files. No command execution.",
+            approval: AskForApproval::OnRequest,
+            sandbox: SandboxPolicy::new_workspace_write_policy(),
+        },
+        ApprovalPreset {
+            id: "sandboxed-agent",
+            label: "Sandboxed Agent",
+            description: "Full agent mode, sandboxed to workspace.",
+            approval: AskForApproval::OnRequest,
+            sandbox: SandboxPolicy::new_workspace_write_policy(),
+        },
+        ApprovalPreset {
+            id: "full-access",
+            label: "Full Access",
+            description: "No restrictions. Full file and network access.",
+            approval: AskForApproval::Never,
+            sandbox: SandboxPolicy::DangerFullAccess,
+        },
+    ]
+}
+'''
+
+# =============================================================================
+# Patch 2: Add Ctrl+A keybind to app.rs
+# =============================================================================
+
+[[patches]]
+id = "add-ctrl-a-keybind"
+file = "tui/src/app.rs"
+
+[patches.query]
+type = "text"
+search = '''
+            KeyEvent {
+                code: KeyCode::Char('t'),
+                modifiers: crossterm::event::KeyModifiers::CONTROL,
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                // Enter alternate screen and set viewport to full size.
+                let _ = tui.enter_alt_screen();
+                self.overlay = Some(Overlay::new_transcript(self.transcript_cells.clone()));
+                tui.frame_requester().schedule_frame();
+            }
+            KeyEvent {
+                code: KeyCode::Char('g'),
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+            KeyEvent {
+                code: KeyCode::Char('t'),
+                modifiers: crossterm::event::KeyModifiers::CONTROL,
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                // Enter alternate screen and set viewport to full size.
+                let _ = tui.enter_alt_screen();
+                self.overlay = Some(Overlay::new_transcript(self.transcript_cells.clone()));
+                tui.frame_requester().schedule_frame();
+            }
+            // PATCH: Ctrl+A cycles approval presets
+            KeyEvent {
+                code: KeyCode::Char('a'),
+                modifiers: crossterm::event::KeyModifiers::CONTROL,
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                self.chat_widget.cycle_approval_preset();
+            }
+            KeyEvent {
+                code: KeyCode::Char('g'),
+'''
+
+# =============================================================================
+# Patch 3: Add cycle_approval_preset method to ChatWidget
+# =============================================================================
+
+[[patches]]
+id = "add-cycle-approval-method"
+file = "tui/src/chatwidget.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    pub(crate) fn open_feedback_note('''
+
+[patches.operation]
+type = "replace"
+text = '''
+    /// Cycle through approval presets with Ctrl+A
+    pub(crate) fn cycle_approval_preset(&mut self) {
+        use codex_common::approval_presets::{builtin_approval_presets, ApprovalPreset};
+
+        if self.bottom_pane.is_task_running() {
+            self.add_info_message(
+                "Cannot change approval mode while a task is running.".to_string(),
+                Some("Wait for the task to finish, or interrupt it.".to_string()),
+            );
+            return;
+        }
+
+        const CYCLE_IDS: [&str; 4] = ["read-only", "edits-only", "sandboxed-agent", "full-access"];
+        let presets = builtin_approval_presets();
+        let cycle_presets: Vec<ApprovalPreset> = CYCLE_IDS
+            .iter()
+            .filter_map(|id| presets.iter().find(|p| p.id == *id).cloned())
+            .collect();
+
+        if cycle_presets.is_empty() {
+            return;
+        }
+
+        let current_approval = self.config.approval_policy.value();
+        let current_sandbox = self.config.sandbox_policy.get();
+
+        let current_idx = cycle_presets.iter().position(|preset| {
+            preset.approval == current_approval && preset.sandbox == *current_sandbox
+        });
+
+        let next_idx = current_idx.map_or(0, |idx| (idx + 1) % cycle_presets.len());
+        let next = cycle_presets[next_idx].clone();
+
+        // Warn before enabling full-access
+        if next.id == "full-access"
+            && !self.config.notices.hide_full_access_warning.unwrap_or(false)
+        {
+            self.open_full_access_confirmation(next);
+            return;
+        }
+
+        self.app_event_tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
+            cwd: None,
+            approval_policy: Some(next.approval),
+            sandbox_policy: Some(next.sandbox.clone()),
+            model: None,
+            effort: None,
+            summary: None,
+        }));
+
+        self.add_info_message(
+            format!("Approval mode: {}", next.label),
+            Some(next.description.to_string()),
+        );
+    }
+
+    pub(crate) fn open_feedback_note('''

@@ -1,0 +1,42 @@
+# =============================================================================
+# SUBAGENT LIMIT PATCH - Increase from 6 to 8
+# =============================================================================
+#
+# Recent upstream change decreased max agent threads from 12 to 6.
+# This patch increases it to 8 as a reasonable middle ground:
+# - Not as aggressive as 12 (which could overwhelm)
+# - More flexible than 6 for complex multi-file tasks
+# - Balances parallelism with resource usage
+#
+# Files modified:
+# - codex-rs/core/src/config/mod.rs: DEFAULT_AGENT_MAX_THREADS constant
+#
+# Version: Targets Codex rust-v0.91.0 and later
+# =============================================================================
+
+[meta]
+name = "subagent-limit-increase"
+description = "Increase max concurrent agent threads from 6 to 8"
+version_range = ">=0.91.0"
+workspace_relative = true
+
+# =============================================================================
+# Patch: Increase DEFAULT_AGENT_MAX_THREADS Constant
+# =============================================================================
+# Find the constant definition and change from 6 to 8
+
+[[patches]]
+id = "increase-agent-max-threads"
+file = "core/src/config/mod.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+pub(crate) const DEFAULT_AGENT_MAX_THREADS: Option<usize> = Some(6);
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub(crate) const DEFAULT_AGENT_MAX_THREADS: Option<usize> = Some(8); // PATCH: Increased from 6 to 8
+'''

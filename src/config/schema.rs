@@ -66,6 +66,14 @@ impl PatchConfig {
                         });
                     }
                 }
+                Query::Text { search } => {
+                    if search.trim().is_empty() {
+                        issues.push(ValidationIssue::MissingField {
+                            patch_id: Some(patch.id.clone()),
+                            field: "query.search",
+                        });
+                    }
+                }
             }
 
             match &patch.operation {
@@ -203,6 +211,11 @@ pub enum Query {
     },
     TreeSitter {
         pattern: String,
+    },
+    /// Simple text search - finds exact string match
+    Text {
+        /// The exact text to search for
+        search: String,
     },
 }
 

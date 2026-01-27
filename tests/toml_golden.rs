@@ -39,7 +39,7 @@ fn insert_section_after_fixture() {
     let plan = editor.plan(&query, &operation, constraints).expect("plan");
     match plan {
         TomlPlan::Edit(edit) => {
-            edit.apply().expect("apply edit");
+            let _ = edit.apply().expect("apply edit");
         }
         TomlPlan::NoOp(reason) => panic!("unexpected no-op: {reason}"),
     }
@@ -74,7 +74,7 @@ fn append_section_at_end_fixture() {
         .expect("plan");
     match plan {
         TomlPlan::Edit(edit) => {
-            edit.apply().expect("apply edit");
+            let _ = edit.apply().expect("apply edit");
         }
         TomlPlan::NoOp(reason) => panic!("unexpected no-op: {reason}"),
     }
@@ -102,7 +102,7 @@ fn replace_value_in_section() {
         .expect("plan");
     match plan {
         TomlPlan::Edit(edit) => {
-            edit.apply().expect("apply edit");
+            let _ = edit.apply().expect("apply edit");
         }
         TomlPlan::NoOp(reason) => panic!("unexpected no-op: {reason}"),
     }

@@ -1,0 +1,64 @@
+# =============================================================================
+# CARGO CONFIG OPTIMIZATIONS - Linux x86_64 Performance Defaults
+# =============================================================================
+#
+# Adds cargo build configuration for optimal Linux builds:
+# - target-cpu=native: Use all available CPU features
+# - opt-level=3: Maximum optimization
+# - link-arg=-fuse-ld=mold: Fast linker (if available, falls back gracefully)
+#
+# These provide good defaults for anyone building without explicit RUSTFLAGS.
+# The zack profile build command overrides target-cpu to znver5 specifically.
+#
+# Files modified:
+# - codex-rs/.cargo/config.toml: Add Linux x86_64 optimization section
+#
+# Version: Targets Codex rust-v0.88.0 and later
+# =============================================================================
+
+[meta]
+name = "cargo-config-linux-optimizations"
+description = "Add Linux x86_64 performance rustflags to cargo config"
+version_range = ">=0.88.0"
+workspace_relative = true
+
+# =============================================================================
+# Patch 1: Add Linux x86_64 Target Configuration
+# =============================================================================
+# Append the Linux optimization section to .cargo/config.toml
+
+[[patches]]
+id = "add-linux-x86-64-optimizations"
+file = ".cargo/config.toml"
+
+[patches.query]
+type = "toml"
+section = "target.x86_64-unknown-linux-gnu"
+
+[patches.operation]
+type = "insert-section"
+at_end = true
+text = '''
+# =============================================================================
+# Linux x86_64 - Performance optimizations
+# =============================================================================
+# Provides good defaults for anyone building without explicit RUSTFLAGS.
+# The zack profile build overrides target-cpu to znver5 specifically via:
+#   RUSTFLAGS="-C target-cpu=znver5" cargo build --profile zack
+#
+# - target-cpu=native: Uses all available CPU features (AVX2, AVX-512, etc.)
+# - opt-level=3: Maximum optimization level
+# - link-arg=-fuse-ld=mold: Fast linker (falls back to default if not available)
+# =============================================================================
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+    "-C", "target-cpu=native",
+    "-C", "opt-level=3",
+    "-C", "link-arg=-fuse-ld=mold",
+]
+'''
+
+# Note: If .cargo/config.toml doesn't exist, create it manually first:
+#   mkdir -p codex-rs/.cargo
+#   touch codex-rs/.cargo/config.toml
+# Then run the patcher to add the optimization section.

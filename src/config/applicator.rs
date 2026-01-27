@@ -6,11 +6,13 @@
 //! - Applies patches using the appropriate locator (ast-grep, tree-sitter, toml)
 //! - Reports detailed results for each patch
 
-use crate::config::schema::{Operation, PatchConfig, PatchDefinition, Query};
+use crate::config::schema::{Operation, PatchConfig, PatchDefinition, Positioning, Query};
 use crate::config::version::VersionError;
 use crate::edit::{Edit, EditError, EditResult, EditVerification};
 use crate::sg::PatternMatcher;
-use crate::toml::TomlEditor;
+use crate::toml::{
+    Constraints, KeyPath, SectionPath, TomlEditor, TomlOperation, TomlPlan, TomlQuery,
+};
 use crate::ts::{StructuralLocator, StructuralTarget};
 use std::fmt;
 use std::fs;
@@ -18,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 /// Result of applying a single patch
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "PatchResult should be checked for success/failure"]
 pub enum PatchResult {
     /// Patch was successfully applied
     Applied { file: PathBuf },
@@ -180,6 +183,60 @@ fn apply_patch(
         Query::TreeSitter { pattern } => {
             apply_structural_patch(patch, &file_path, &content, pattern, false)
         }
+        Query::Text { search } => apply_text_patch(patch, &file_path, &content, search),
+    }
+}
+
+/// Apply a simple text-based patch (find and replace)
+fn apply_text_patch(
+    patch: &PatchDefinition,
+    file_path: &Path,
+    content: &str,
+    search: &str,
+) -> Result<PatchResult, ApplicationError> {
+    // Check if the search text exists in the file
+    if !content.contains(search) {
+        // Check if the replacement text already exists (idempotency)
+        if let Operation::Replace { text } = &patch.operation {
+            if content.contains(text.as_str()) {
+                return Ok(PatchResult::AlreadyApplied {
+                    file: file_path.to_path_buf(),
+                });
+            }
+        }
+        return Err(ApplicationError::NoMatch {
+            file: file_path.to_path_buf(),
+        });
+    }
+
+    // Count matches to ensure uniqueness
+    let match_count = content.matches(search).count();
+    if match_count > 1 {
+        return Err(ApplicationError::AmbiguousMatch {
+            file: file_path.to_path_buf(),
+            count: match_count,
+        });
+    }
+
+    // Apply the operation
+    match &patch.operation {
+        Operation::Replace { text } => {
+            // Create edit and apply
+            let byte_start = content.find(search).unwrap();
+            let byte_end = byte_start + search.len();
+
+            let edit = Edit::new(file_path, byte_start, byte_end, text.clone(), search);
+
+            let _ = edit.apply().map_err(ApplicationError::Edit)?;
+
+            Ok(PatchResult::Applied {
+                file: file_path.to_path_buf(),
+            })
+        }
+        _ => Err(ApplicationError::TomlOperation {
+            file: file_path.to_path_buf(),
+            reason: "Text queries only support 'replace' operation".to_string(),
+        }),
     }
 }
 
@@ -189,7 +246,7 @@ fn apply_toml_patch(
     file_path: &Path,
     content: &str,
 ) -> Result<PatchResult, ApplicationError> {
-    let editor = TomlEditor::new(content).map_err(|e| ApplicationError::TomlOperation {
+    let editor = TomlEditor::from_path(file_path, content).map_err(|e| ApplicationError::TomlOperation {
         file: file_path.to_path_buf(),
         reason: e.to_string(),
     })?;
@@ -230,11 +287,145 @@ fn apply_toml_patch(
         _ => {}
     }
 
-    // Apply operation (implementation details depend on toml module API)
-    // For now, return a placeholder
-    Ok(PatchResult::Applied {
-        file: file_path.to_path_buf(),
-    })
+    // Convert Query to TomlQuery
+    let toml_query = match &patch.query {
+        Query::Toml { section, key, .. } => {
+            if let Some(key_val) = key {
+                let section_path = if let Some(sec) = section {
+                    SectionPath::parse(sec).map_err(|e| ApplicationError::TomlOperation {
+                        file: file_path.to_path_buf(),
+                        reason: format!("Invalid section path: {}", e),
+                    })?
+                } else {
+                    SectionPath::parse("").map_err(|e| ApplicationError::TomlOperation {
+                        file: file_path.to_path_buf(),
+                        reason: format!("Invalid section path: {}", e),
+                    })?
+                };
+                let key_path = KeyPath::parse(key_val).map_err(|e| ApplicationError::TomlOperation {
+                    file: file_path.to_path_buf(),
+                    reason: format!("Invalid key path: {}", e),
+                })?;
+                TomlQuery::Key {
+                    section: section_path,
+                    key: key_path,
+                }
+            } else if let Some(section_val) = section {
+                let section_path = SectionPath::parse(section_val).map_err(|e| ApplicationError::TomlOperation {
+                    file: file_path.to_path_buf(),
+                    reason: format!("Invalid section path: {}", e),
+                })?;
+                TomlQuery::Section {
+                    path: section_path,
+                }
+            } else {
+                return Err(ApplicationError::TomlOperation {
+                    file: file_path.to_path_buf(),
+                    reason: "TOML query must specify section or key".to_string(),
+                });
+            }
+        }
+        _ => {
+            return Err(ApplicationError::TomlOperation {
+                file: file_path.to_path_buf(),
+                reason: "Expected TOML query for TOML patch".to_string(),
+            });
+        }
+    };
+
+    // Convert Operation to TomlOperation
+    let toml_operation = match &patch.operation {
+        Operation::InsertSection { text, positioning } => TomlOperation::InsertSection {
+            text: text.clone(),
+            positioning: convert_positioning(positioning).map_err(|e| ApplicationError::TomlOperation {
+                file: file_path.to_path_buf(),
+                reason: format!("Invalid positioning: {}", e),
+            })?,
+        },
+        Operation::AppendSection { text } => TomlOperation::AppendSection { text: text.clone() },
+        Operation::ReplaceValue { value } => TomlOperation::ReplaceValue {
+            value: value.clone(),
+        },
+        Operation::DeleteSection => TomlOperation::DeleteSection,
+        Operation::ReplaceKey { new_key } => TomlOperation::ReplaceKey {
+            new_key: new_key.clone(),
+        },
+        _ => {
+            return Err(ApplicationError::TomlOperation {
+                file: file_path.to_path_buf(),
+                reason: format!("Unsupported operation for TOML: {:?}", patch.operation),
+            });
+        }
+    };
+
+    // Plan the edit
+    let plan = editor
+        .plan(&toml_query, &toml_operation, Constraints::none())
+        .map_err(|e| ApplicationError::TomlOperation {
+            file: file_path.to_path_buf(),
+            reason: e.to_string(),
+        })?;
+
+    // Apply the plan
+    match plan {
+        TomlPlan::Edit(edit) => match edit.apply()? {
+            EditResult::Applied { .. } => Ok(PatchResult::Applied {
+                file: file_path.to_path_buf(),
+            }),
+            EditResult::AlreadyApplied { .. } => Ok(PatchResult::AlreadyApplied {
+                file: file_path.to_path_buf(),
+            }),
+        },
+        TomlPlan::NoOp(_reason) => {
+            // NoOp means the operation was already applied or not needed
+            Ok(PatchResult::AlreadyApplied {
+                file: file_path.to_path_buf(),
+            })
+        }
+    }
+}
+
+/// Convert config::Positioning to toml::Positioning
+fn convert_positioning(
+    pos: &Positioning,
+) -> Result<crate::toml::Positioning, String> {
+    use crate::toml::Positioning as TP;
+
+    // Count how many positioning options are specified
+    let mut count = 0;
+    if pos.after_section.is_some() {
+        count += 1;
+    }
+    if pos.before_section.is_some() {
+        count += 1;
+    }
+    if pos.at_end {
+        count += 1;
+    }
+    if pos.at_beginning {
+        count += 1;
+    }
+
+    if count > 1 {
+        return Err("Only one positioning option should be specified".to_string());
+    }
+
+    if let Some(after) = &pos.after_section {
+        let path = SectionPath::parse(after)
+            .map_err(|e| format!("Invalid after_section: {}", e))?;
+        Ok(TP::AfterSection(path))
+    } else if let Some(before) = &pos.before_section {
+        let path = SectionPath::parse(before)
+            .map_err(|e| format!("Invalid before_section: {}", e))?;
+        Ok(TP::BeforeSection(path))
+    } else if pos.at_end {
+        Ok(TP::AtEnd)
+    } else if pos.at_beginning {
+        Ok(TP::AtBeginning)
+    } else {
+        // Default to AtEnd if nothing specified
+        Ok(TP::AtEnd)
+    }
 }
 
 /// Apply a structural patch using ast-grep or tree-sitter
@@ -256,8 +447,26 @@ fn apply_structural_patch(
         reason: e,
     })?;
 
-    // Check uniqueness
+    // Special handling for Delete operations
     if matches.is_empty() {
+        // For Delete operations, check if the deletion was already applied
+        // by looking for the comment marker
+        if let Operation::Delete { insert_comment } = &patch.operation {
+            if let Some(comment) = insert_comment {
+                // Check if the comment exists in the file
+                if content.contains(comment) {
+                    return Ok(PatchResult::AlreadyApplied {
+                        file: file_path.to_path_buf(),
+                    });
+                }
+            }
+            // If no comment or comment not found, still report as not found
+            // This could mean the code was manually removed
+            return Ok(PatchResult::AlreadyApplied {
+                file: file_path.to_path_buf(),
+            });
+        }
+
         return Err(ApplicationError::NoMatch {
             file: file_path.to_path_buf(),
         });

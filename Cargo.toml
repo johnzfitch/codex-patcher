@@ -40,3 +40,7 @@ anyhow = "1"
 
 [dev-dependencies]
 proptest = "1"
+
+[[test]]
+name = "integration"
+path = "tests/integration/mod.rs"
