@@ -10,13 +10,13 @@
 #
 # Keybind: Ctrl+A cycles through the 4 presets
 #
-# Version: Targets Codex rust-v0.91.0 and later
+# Version: Targets Codex rust-v0.92.0 and later
 # =============================================================================
 
 [meta]
 name = "approvals-ui-simplified"
 description = "4-preset approval system with Ctrl+A cycling"
-version_range = ">=0.91.0"
+version_range = ">=0.92.0"
 workspace_relative = true
 
 # =============================================================================
@@ -178,7 +178,7 @@ text = '''
         if next.id == "full-access"
             && !self.config.notices.hide_full_access_warning.unwrap_or(false)
         {
-            self.open_full_access_confirmation(next);
+            self.open_full_access_confirmation(next, false);
             return;
         }
 
@@ -189,6 +189,8 @@ text = '''
             model: None,
             effort: None,
             summary: None,
+            collaboration_mode: None,
+            personality: None,
         }));
 
         self.add_info_message(
