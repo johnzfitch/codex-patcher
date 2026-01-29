@@ -1,30 +1,39 @@
 # =============================================================================
-# APPROVALS UI PATCHES - Simplified 4-Preset System with Ctrl+A Cycling
+# APPROVALS UI PATCHES - 5-Preset System with Ctrl+A Cycling
 # =============================================================================
 #
-# This patch adds a simplified approval preset system with 4 clear modes:
-# 1. Read Only - Can read files/code, no edits, no commands
-# 2. Edits Only - Can read and edit files, no command execution
-# 3. Sandboxed Agent - Full agent mode, sandboxed to workspace
-# 4. Full Access - No restrictions, full file and network access
+# This patch adds a simplified approval preset system with 5 distinct modes:
+# 1. Read Only    - Can read files/code. No edits, no commands.
+# 2. Plan Only    - Can read and plan. No execution.
+# 3. Delegate Only - Spawns subagents for tasks. Asks before direct execution.
+# 4. Workspace Only - Auto-approves sandboxed workspace commands.
+# 5. YOLO         - No restrictions. Full system access.
 #
-# Keybind: Ctrl+A cycles through the 4 presets
+# Each preset has a unique (approval, sandbox) combination for reliable detection.
+#
+# Keybind: Ctrl+A cycles through all 5 presets
 #
 # Version: Targets Codex rust-v0.92.0 and later
 # =============================================================================
 
 [meta]
-name = "approvals-ui-simplified"
-description = "4-preset approval system with Ctrl+A cycling"
+name = "approvals-ui-5-preset"
+description = "5-preset approval system with Ctrl+A cycling and pattern-matched detection"
 version_range = ">=0.92.0"
 workspace_relative = true
 
 # =============================================================================
-# Patch 1: Simplify Approval Presets to 4 Modes
+# Patch 1: Define 5 Distinct Approval Presets
 # =============================================================================
+# Each preset has a unique (approval, sandbox) combination:
+# - Read Only:      (OnRequest, ReadOnly)
+# - Plan Only:      (UnlessTrusted, ReadOnly)
+# - Delegate Only:  (OnRequest, WorkspaceWrite)
+# - Workspace Only: (OnFailure, WorkspaceWrite)
+# - YOLO:           (Never, DangerFullAccess)
 
 [[patches]]
-id = "simplify-approval-presets"
+id = "define-5-approval-presets"
 file = "common/src/approval_presets.rs"
 
 [patches.query]
@@ -48,23 +57,30 @@ pub fn builtin_approval_presets() -> Vec<ApprovalPreset> {
             sandbox: SandboxPolicy::ReadOnly,
         },
         ApprovalPreset {
-            id: "edits-only",
-            label: "Edits Only",
-            description: "Can read and edit files. No command execution.",
+            id: "plan-only",
+            label: "Plan Only",
+            description: "Can read and plan. No execution.",
+            approval: AskForApproval::UnlessTrusted,
+            sandbox: SandboxPolicy::ReadOnly,
+        },
+        ApprovalPreset {
+            id: "delegate-only",
+            label: "Delegate Only",
+            description: "Spawns subagents for tasks. Asks before direct execution.",
             approval: AskForApproval::OnRequest,
             sandbox: SandboxPolicy::new_workspace_write_policy(),
         },
         ApprovalPreset {
-            id: "sandboxed-agent",
-            label: "Sandboxed Agent",
-            description: "Full agent mode, sandboxed to workspace.",
-            approval: AskForApproval::OnRequest,
+            id: "workspace-only",
+            label: "Workspace Only",
+            description: "Auto-approves sandboxed workspace commands.",
+            approval: AskForApproval::OnFailure,
             sandbox: SandboxPolicy::new_workspace_write_policy(),
         },
         ApprovalPreset {
-            id: "full-access",
-            label: "Full Access",
-            description: "No restrictions. Full file and network access.",
+            id: "yolo",
+            label: "YOLO",
+            description: "No restrictions. Full system access.",
             approval: AskForApproval::Never,
             sandbox: SandboxPolicy::DangerFullAccess,
         },
@@ -142,6 +158,9 @@ search = '''
 type = "replace"
 text = '''
     /// Cycle through approval presets with Ctrl+A
+    ///
+    /// Uses pattern matching to compare sandbox policies, since WorkspaceWrite
+    /// variants have internal fields (writable_roots, etc.) that differ at runtime.
     pub(crate) fn cycle_approval_preset(&mut self) {
         use codex_common::approval_presets::{builtin_approval_presets, ApprovalPreset};
 
@@ -153,7 +172,7 @@ text = '''
             return;
         }
 
-        const CYCLE_IDS: [&str; 4] = ["read-only", "edits-only", "sandboxed-agent", "full-access"];
+        const CYCLE_IDS: [&str; 5] = ["read-only", "plan-only", "delegate-only", "workspace-only", "yolo"];
         let presets = builtin_approval_presets();
         let cycle_presets: Vec<ApprovalPreset> = CYCLE_IDS
             .iter()
@@ -167,15 +186,17 @@ text = '''
         let current_approval = self.config.approval_policy.value();
         let current_sandbox = self.config.sandbox_policy.get();
 
+        // Use pattern matching for sandbox comparison - WorkspaceWrite has internal
+        // fields that differ at runtime (writable_roots, etc.), so direct equality fails
         let current_idx = cycle_presets.iter().position(|preset| {
-            preset.approval == current_approval && preset.sandbox == *current_sandbox
+            Self::preset_matches_current(current_approval, current_sandbox, preset)
         });
 
         let next_idx = current_idx.map_or(0, |idx| (idx + 1) % cycle_presets.len());
         let next = cycle_presets[next_idx].clone();
 
-        // Warn before enabling full-access
-        if next.id == "full-access"
+        // Warn before enabling YOLO mode
+        if next.id == "yolo"
             && !self.config.notices.hide_full_access_warning.unwrap_or(false)
         {
             self.open_full_access_confirmation(next, false);

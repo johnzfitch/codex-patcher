@@ -1,21 +1,36 @@
 # =============================================================================
-# PRIVACY PATCHES - Disable Statsig Telemetry in Codex
+# PRIVACY PATCHES - Comprehensive Privacy Hardening for Codex
 # =============================================================================
 #
-# These patches remove hardcoded telemetry to ab.chatgpt.com that was enabled
-# by default in upstream Codex releases. The original code sent metrics to
-# OpenAI's Statsig endpoint without explicit user consent.
+# These patches remove/disable various privacy-impacting features in Codex:
+#
+# 1. TELEMETRY (Patches 1-5):
+#    - Disable Statsig metrics to ab.chatgpt.com
+#    - Remove hardcoded API keys and endpoints
+#    - Set default metrics exporter to None
+#
+# 2. GIT REPOSITORY TRACKING (Patches 6-7):
+#    - Redact git_origin_url from state DB and rollout metadata
+#    - Prevents leaking repository identity (may contain usernames in SSH URLs)
+#
+# 3. WEB SEARCH (Patch 8):
+#    - Disable web search by default (was: Cached/Live based on sandbox)
+#    - Prevents search queries from being sent externally
+#    - User can still explicitly enable via config if needed
 #
 # Affected files:
-# - codex-rs/otel/src/config.rs: Remove hardcoded Statsig constants and modify resolver
-# - codex-rs/core/src/config/types.rs: Change default metrics_exporter from Statsig to None
+# - codex-rs/otel/src/config.rs: Statsig telemetry removal
+# - codex-rs/core/src/config/types.rs: Default metrics exporter
+# - codex-rs/state/src/extract.rs: Git origin URL redaction
+# - codex-rs/core/src/rollout/metadata.rs: Git origin URL redaction
+# - codex-rs/core/src/config/mod.rs: Web search disable
 #
 # Version: Targets Codex rust-v0.88.0 and later
 # =============================================================================
 
 [meta]
 name = "privacy-patches"
-description = "Remove hardcoded telemetry to ab.chatgpt.com"
+description = "Comprehensive privacy hardening: disable telemetry, redact git URLs, disable web search"
 version_range = ">=0.88.0"
 workspace_relative = true
 
@@ -141,5 +156,110 @@ impl Default for OtelConfig {
             metrics_exporter: OtelExporterKind::None, // PRIVACY PATCH: Changed from Statsig
         }
     }
+}
+'''
+
+# =============================================================================
+# Patch 6: Redact git_origin_url from State DB (state/src/extract.rs)
+# =============================================================================
+# Prevents storing git remote URLs which may contain usernames or identify repos
+
+[[patches]]
+id = "redact-git-origin-url-state"
+file = "state/src/extract.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    if let Some(git) = meta_line.git.as_ref() {
+        metadata.git_sha = git.commit_hash.clone();
+        metadata.git_branch = git.branch.clone();
+        metadata.git_origin_url = git.repository_url.clone();
+    }
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    if let Some(git) = meta_line.git.as_ref() {
+        metadata.git_sha = git.commit_hash.clone();
+        metadata.git_branch = git.branch.clone();
+        // PRIVACY PATCH: Redact git origin URL to prevent leaking repo identity
+        metadata.git_origin_url = None;
+    }
+'''
+
+# =============================================================================
+# Patch 7: Redact git_origin_url from Rollout Metadata (core/src/rollout/metadata.rs)
+# =============================================================================
+
+[[patches]]
+id = "redact-git-origin-url-rollout"
+file = "core/src/rollout/metadata.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    if let Some(git) = session_meta.git.as_ref() {
+        builder.git_sha = git.commit_hash.clone();
+        builder.git_branch = git.branch.clone();
+        builder.git_origin_url = git.repository_url.clone();
+    }
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    if let Some(git) = session_meta.git.as_ref() {
+        builder.git_sha = git.commit_hash.clone();
+        builder.git_branch = git.branch.clone();
+        // PRIVACY PATCH: Redact git origin URL to prevent leaking repo identity
+        builder.git_origin_url = None;
+    }
+'''
+
+# =============================================================================
+# Patch 8: Disable Auto Web Search (default to Disabled, user can override)
+# =============================================================================
+# Prevents automatic web search enablement based on sandbox policy.
+# User can still explicitly enable web_search in config.toml if desired.
+# For privacy, use Kagi MCP server instead of OpenAI's built-in search.
+
+[[patches]]
+id = "disable-auto-web-search"
+file = "core/src/config/mod.rs"
+
+[patches.query]
+type = "text"
+search = '''
+pub(crate) fn resolve_web_search_mode_for_turn(
+    explicit_mode: Option<WebSearchMode>,
+    sandbox_policy: &SandboxPolicy,
+) -> WebSearchMode {
+    if let Some(mode) = explicit_mode {
+        return mode;
+    }
+    if matches!(sandbox_policy, SandboxPolicy::DangerFullAccess) {
+        WebSearchMode::Live
+    } else {
+        WebSearchMode::Cached
+    }
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub(crate) fn resolve_web_search_mode_for_turn(
+    explicit_mode: Option<WebSearchMode>,
+    _sandbox_policy: &SandboxPolicy,
+) -> WebSearchMode {
+    // PRIVACY PATCH: Default to Disabled instead of auto-enabling based on sandbox
+    // User can explicitly set web_search = "live" or "cached" in config.toml
+    // For privacy-respecting search, use Kagi MCP server instead
+    if let Some(mode) = explicit_mode {
+        return mode;
+    }
+    WebSearchMode::Disabled
 }
 '''

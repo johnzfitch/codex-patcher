@@ -38,6 +38,7 @@
 //! }
 //! ```
 
+pub mod compiler;
 pub mod config;
 pub mod edit;
 pub mod safety;
