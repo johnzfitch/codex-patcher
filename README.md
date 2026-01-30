@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/your-org/codex-patcher/actions"><img src="https://img.shields.io/github/actions/workflow/status/your-org/codex-patcher/ci.yml?branch=master&style=flat-square" alt="CI Status"></a>
+  <a href="https://github.com/johnzfitch/codex-patcher/actions"><img src="https://img.shields.io/github/actions/workflow/status/johnzfitch/codex-patcher/ci.yml?branch=master&style=flat-square" alt="CI Status"></a>
   <a href="https://crates.io/crates/codex-patcher"><img src="https://img.shields.io/crates/v/codex-patcher.svg?style=flat-square" alt="Crates.io"></a>
   <a href="https://docs.rs/codex-patcher"><img src="https://img.shields.io/docsrs/codex-patcher?style=flat-square" alt="docs.rs"></a>
   <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-blue?style=flat-square" alt="License"></a>
@@ -43,7 +43,7 @@
 cargo install codex-patcher
 
 # From source
-git clone https://github.com/your-org/codex-patcher
+git clone https://github.com/johnzfitch/codex-patcher
 cd codex-patcher
 cargo install --path .
 ```
