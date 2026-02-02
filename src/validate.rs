@@ -123,6 +123,62 @@ impl Default for ParseValidator {
     }
 }
 
+/// Pooled validation functions that reuse parsers from thread-local pool.
+///
+/// These functions provide significant performance improvements for multi-patch
+/// workloads by avoiding redundant parser allocation and initialization.
+pub mod pooled {
+    use super::*;
+    use crate::pool;
+
+    /// Validate source code using pooled parser.
+    pub fn validate(source: &str) -> Result<(), ValidationError> {
+        pool::with_parser(|parser| {
+            let parsed = parser.parse_with_source(source)?;
+            let errors = collect_errors(&parsed, source);
+
+            if !errors.is_empty() {
+                return Err(ValidationError::ParseErrorIntroduced {
+                    count: errors.len(),
+                    errors,
+                });
+            }
+
+            Ok(())
+        })?
+    }
+
+    /// Compare two sources and check if new errors were introduced using pooled parser.
+    pub fn validate_edit(
+        original: &str,
+        edited: &str,
+    ) -> Result<(), ValidationError> {
+        pool::with_parser(|parser| {
+            let original_parsed = parser.parse_with_source(original)?;
+            let original_errors = collect_error_positions(&original_parsed);
+
+            let edited_parsed = parser.parse_with_source(edited)?;
+            let edited_errors = collect_error_positions(&edited_parsed);
+
+            // Check if new errors were introduced
+            let new_errors: Vec<_> = edited_errors
+                .difference(&original_errors)
+                .copied()
+                .collect();
+
+            if !new_errors.is_empty() {
+                let error_details = collect_errors(&edited_parsed, edited);
+                return Err(ValidationError::ParseErrorIntroduced {
+                    count: error_details.len(),
+                    errors: error_details,
+                });
+            }
+
+            Ok(())
+        })?
+    }
+}
+
 /// Collect all error nodes from a parsed source.
 fn collect_errors(parsed: &ParsedSource<'_>, source: &str) -> Vec<ErrorLocation> {
     let mut errors = Vec::new();

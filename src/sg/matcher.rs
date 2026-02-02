@@ -1,7 +1,8 @@
+use crate::cache;
 use crate::sg::errors::AstGrepError;
 use crate::sg::lang::rust;
 use ast_grep_core::tree_sitter::StrDoc;
-use ast_grep_core::{AstGrep, NodeMatch, Pattern};
+use ast_grep_core::{AstGrep, NodeMatch};
 use ast_grep_language::SupportLang;
 use std::collections::HashMap;
 
@@ -66,7 +67,7 @@ impl PatternMatcher {
 
     /// Find all matches for a pattern.
     pub fn find_all(&self, pattern: &str) -> Result<Vec<PatternMatch>, AstGrepError> {
-        let pat = Pattern::new(pattern, rust());
+        let pat = cache::get_or_compile_pattern(pattern, rust());
         let root = self.sg.root();
         let matches: Vec<_> = root.find_all(&pat).collect();
 
@@ -91,7 +92,7 @@ impl PatternMatcher {
 
     /// Check if a pattern has any matches.
     pub fn has_match(&self, pattern: &str) -> bool {
-        let pat = Pattern::new(pattern, rust());
+        let pat = cache::get_or_compile_pattern(pattern, rust());
         self.sg.root().find(&pat).is_some()
     }
 
@@ -171,7 +172,7 @@ impl PatternMatcher {
 
             // If we have a field filter, check it
             if let Some((field_name, pattern)) = field_filter {
-                let pat = Pattern::new(pattern, rust());
+                let pat = cache::get_or_compile_pattern(pattern, rust());
                 let field_node = node.field(field_name);
 
                 if let Some(field) = field_node {

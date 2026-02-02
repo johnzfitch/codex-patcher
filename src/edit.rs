@@ -238,7 +238,7 @@ impl Edit {
             a.file.cmp(&b.file).then(b.byte_start.cmp(&a.byte_start)) // Descending by byte_start
         });
 
-        let mut results = Vec::new();
+        let mut results = Vec::with_capacity(edits.len());
         let mut current_file = None;
         let mut file_edits = Vec::new();
 
@@ -301,7 +301,7 @@ fn apply_file_edits(edits: &[Edit]) -> Result<Vec<EditResult>, EditError> {
 
     // Apply edits bottom-to-top (already sorted descending)
     let mut new_content = original_content.clone();
-    let mut results = Vec::new();
+    let mut results = Vec::with_capacity(edits.len());
 
     for edit in edits {
         let current_bytes = &new_content[edit.byte_start..edit.byte_end];

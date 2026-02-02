@@ -194,6 +194,59 @@ impl Default for StructuralLocator {
     }
 }
 
+/// Pooled location functions that reuse parsers from thread-local pool.
+///
+/// These functions provide significant performance improvements for multi-patch
+/// workloads by avoiding redundant parser allocation and initialization.
+pub mod pooled {
+    use super::*;
+    use crate::pool;
+
+    /// Locate a structural target using pooled parser.
+    pub fn locate(source: &str, target: &StructuralTarget) -> Result<LocatorResult, TreeSitterError> {
+        pool::with_parser(|parser| {
+            let parsed = parser.parse_with_source(source)?;
+            let query_str = target.to_query();
+            let engine = QueryEngine::new(&query_str)?;
+
+            let m = engine.find_unique(&parsed)?;
+            let mut result = LocatorResult::from(m);
+            result.text = source[result.byte_start..result.byte_end].to_string();
+
+            Ok(result)
+        })?
+    }
+
+    /// Locate all matches using pooled parser.
+    pub fn locate_all(
+        source: &str,
+        target: &StructuralTarget,
+    ) -> Result<Vec<LocatorResult>, TreeSitterError> {
+        pool::with_parser(|parser| {
+            let parsed = parser.parse_with_source(source)?;
+            let query_str = target.to_query();
+            let engine = QueryEngine::new(&query_str)?;
+
+            let matches = engine.find_all(&parsed);
+            let results = matches
+                .into_iter()
+                .map(|m| {
+                    let mut result = LocatorResult::from(m);
+                    result.text = source[result.byte_start..result.byte_end].to_string();
+                    result
+                })
+                .collect();
+
+            Ok(results)
+        })?
+    }
+
+    /// Find a function by name using pooled parser.
+    pub fn find_function(source: &str, name: &str) -> Result<LocatorResult, TreeSitterError> {
+        locate(source, &StructuralTarget::Function { name: name.to_string() })
+    }
+}
+
 /// Convenience functions for common operations.
 impl StructuralLocator {
     /// Find a function by name.
