@@ -13,6 +13,8 @@ fn setup_mock_codex_workspace() -> TempDir {
     // Create directory structure
     fs::create_dir_all(dir.path().join("otel/src")).unwrap();
     fs::create_dir_all(dir.path().join("core/src/config")).unwrap();
+    fs::create_dir_all(dir.path().join("core/src/rollout")).unwrap();
+    fs::create_dir_all(dir.path().join("state/src")).unwrap();
 
     // Create otel/src/config.rs with Statsig implementation
     let otel_config = dir.path().join("otel/src/config.rs");
@@ -65,6 +67,34 @@ pub(crate) fn resolve_exporter(exporter: &OtelExporter) -> OtelExporter {
     )
     .unwrap();
 
+    // Create core/src/config/mod.rs with web search auto-enable logic
+    let config_mod = dir.path().join("core/src/config/mod.rs");
+    fs::write(
+        &config_mod,
+        r#"
+use crate::SandboxPolicy;
+
+pub(crate) fn resolve_web_search_mode_for_turn(
+    explicit_mode: Option<WebSearchMode>,
+    is_azure_responses_endpoint: bool,
+    sandbox_policy: &SandboxPolicy,
+) -> WebSearchMode {
+    if let Some(mode) = explicit_mode {
+        return mode;
+    }
+    if is_azure_responses_endpoint {
+        return WebSearchMode::Disabled;
+    }
+    if matches!(sandbox_policy, SandboxPolicy::DangerFullAccess) {
+        WebSearchMode::Live
+    } else {
+        WebSearchMode::Cached
+    }
+}
+"#,
+    )
+    .unwrap();
+
     // Create core/src/config/types.rs with Statsig default
     let types = dir.path().join("core/src/config/types.rs");
     fs::write(
@@ -96,6 +126,45 @@ impl Default for OtelConfig {
             metrics_exporter: OtelExporterKind::Statsig,
         }
     }
+}
+"#,
+    )
+    .unwrap();
+
+    // Create state/src/extract.rs with git origin URL tracking
+    let extract = dir.path().join("state/src/extract.rs");
+    fs::write(
+        &extract,
+        r#"
+fn apply_meta_line(metadata: &mut ThreadMetadata, meta_line: &MetaLine) {
+    if let Some(meta) = meta_line.meta.as_ref() {
+        metadata.cwd = meta_line.meta.cwd.clone();
+    }
+    if let Some(git) = meta_line.git.as_ref() {
+        metadata.git_sha = git.commit_hash.clone();
+        metadata.git_branch = git.branch.clone();
+        metadata.git_origin_url = git.repository_url.clone();
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    // Create core/src/rollout/metadata.rs with git origin URL tracking
+    let rollout_meta = dir.path().join("core/src/rollout/metadata.rs");
+    fs::write(
+        &rollout_meta,
+        r#"
+fn build_metadata(session_meta: &SessionMeta) -> Option<ThreadMetadataBuilder> {
+    let mut builder = ThreadMetadataBuilder::default();
+    builder.sandbox_policy = SandboxPolicy::ReadOnly;
+    builder.approval_mode = AskForApproval::OnRequest;
+    if let Some(git) = session_meta.git.as_ref() {
+        builder.git_sha = git.commit_hash.clone();
+        builder.git_branch = git.branch.clone();
+        builder.git_origin_url = git.repository_url.clone();
+    }
+    Some(builder)
 }
 "#,
     )
@@ -166,6 +235,20 @@ fn test_privacy_patches_apply() {
     assert!(
         types.contains("metrics_exporter: OtelExporterKind::None"),
         "metrics_exporter should be None in Default impl"
+    );
+
+    // Verify core/src/config/mod.rs changes
+    let config_mod =
+        fs::read_to_string(workspace.path().join("core/src/config/mod.rs")).unwrap();
+
+    // Web search should default to Disabled
+    assert!(
+        config_mod.contains("WebSearchMode::Disabled"),
+        "resolve_web_search_mode_for_turn should default to Disabled"
+    );
+    assert!(
+        config_mod.contains("PRIVACY PATCH"),
+        "web search patch should include privacy comment"
     );
 }
 

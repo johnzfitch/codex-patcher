@@ -234,10 +234,14 @@ type = "text"
 search = '''
 pub(crate) fn resolve_web_search_mode_for_turn(
     explicit_mode: Option<WebSearchMode>,
+    is_azure_responses_endpoint: bool,
     sandbox_policy: &SandboxPolicy,
 ) -> WebSearchMode {
     if let Some(mode) = explicit_mode {
         return mode;
+    }
+    if is_azure_responses_endpoint {
+        return WebSearchMode::Disabled;
     }
     if matches!(sandbox_policy, SandboxPolicy::DangerFullAccess) {
         WebSearchMode::Live
@@ -252,6 +256,7 @@ type = "replace"
 text = '''
 pub(crate) fn resolve_web_search_mode_for_turn(
     explicit_mode: Option<WebSearchMode>,
+    _is_azure_responses_endpoint: bool,
     _sandbox_policy: &SandboxPolicy,
 ) -> WebSearchMode {
     // PRIVACY PATCH: Default to Disabled instead of auto-enabling based on sandbox
