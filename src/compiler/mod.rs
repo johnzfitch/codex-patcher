@@ -200,7 +200,13 @@ pub fn check_passes(workspace: &Path, package: Option<&str>) -> bool {
         cmd.args(["-p", pkg]);
     }
 
-    cmd.status().map(|s| s.success()).unwrap_or(false)
+    match cmd.status() {
+        Ok(status) => status.success(),
+        Err(e) => {
+            eprintln!("warning: failed to run cargo check: {e}");
+            false
+        }
+    }
 }
 
 #[cfg(test)]

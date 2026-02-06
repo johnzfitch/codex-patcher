@@ -87,6 +87,8 @@ fn parse_dotted_path(input: &str) -> Result<Vec<String>, TomlError> {
     let mut chars = input.chars().peekable();
     let mut in_quotes = false;
     let mut quote_char = '\0';
+    let mut quote_open_pos: usize = 0;
+    let mut char_idx: usize = 0;
 
     while let Some(ch) = chars.next() {
         if in_quotes {
@@ -134,6 +136,7 @@ fn parse_dotted_path(input: &str) -> Result<Vec<String>, TomlError> {
                 }
                 in_quotes = true;
                 quote_char = ch;
+                quote_open_pos = char_idx;
             }
             ch if ch.is_whitespace() => {
                 return Err(TomlError::InvalidSectionPath {
@@ -143,12 +146,15 @@ fn parse_dotted_path(input: &str) -> Result<Vec<String>, TomlError> {
             }
             other => current.push(other),
         }
+        char_idx += 1;
     }
 
     if in_quotes {
         return Err(TomlError::InvalidSectionPath {
             input: input.to_string(),
-            message: "unterminated quoted key".to_string(),
+            message: format!(
+                "unterminated quoted key (opening {quote_char} at position {quote_open_pos})"
+            ),
         });
     }
 

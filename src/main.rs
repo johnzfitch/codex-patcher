@@ -182,35 +182,60 @@ fn auto_detect_workspace() -> Option<PathBuf> {
     None
 }
 
-/// Find Codex workspace by checking git remotes
+/// Find Codex workspace by checking git remotes.
+///
+/// Parses `git remote -v` output line-by-line, extracting the URL field
+/// (second whitespace-delimited token) and checking for the openai/codex
+/// repo path. Handles both HTTPS and SSH URL formats.
 fn find_codex_via_git() -> Option<PathBuf> {
     let output = Command::new("git")
         .args(["remote", "-v"])
         .output()
         .ok()?;
 
-    let remotes = String::from_utf8_lossy(&output.stdout);
-
-    // Check if any remote points to OpenAI's Codex repo
-    if remotes.contains("github.com/openai/codex") || remotes.contains("github.com:openai/codex")
-    {
-        let root_output = Command::new("git")
-            .args(["rev-parse", "--show-toplevel"])
-            .output()
-            .ok()?;
-
-        let git_root = String::from_utf8_lossy(&root_output.stdout)
-            .trim()
-            .to_string();
-
-        let codex_rs = PathBuf::from(git_root).join("codex-rs");
-
-        if codex_rs.exists() {
-            return Some(codex_rs);
-        }
+    if !output.status.success() {
+        return None;
     }
 
-    None
+    let remotes = String::from_utf8_lossy(&output.stdout);
+
+    // Parse each line: "origin\thttps://github.com/openai/codex.git (fetch)"
+    // Extract the URL (second field) and check for the repo path.
+    let is_codex_remote = remotes.lines().any(|line| {
+        let url = line.split_whitespace().nth(1).unwrap_or("");
+        // HTTPS: github.com/openai/codex or github.com/openai/codex.git
+        // SSH:   github.com:openai/codex or github.com:openai/codex.git
+        let normalized = url
+            .trim_end_matches(".git")
+            .trim_end_matches('/');
+        normalized.ends_with("github.com/openai/codex")
+            || normalized.ends_with("github.com:openai/codex")
+    });
+
+    if !is_codex_remote {
+        return None;
+    }
+
+    let root_output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+
+    if !root_output.status.success() {
+        return None;
+    }
+
+    let git_root = String::from_utf8_lossy(&root_output.stdout)
+        .trim()
+        .to_string();
+
+    let codex_rs = PathBuf::from(git_root).join("codex-rs");
+
+    if codex_rs.exists() {
+        Some(codex_rs)
+    } else {
+        None
+    }
 }
 
 /// Helper: Read workspace version from Cargo.toml
@@ -303,15 +328,23 @@ fn cmd_apply(
             continue;
         }
 
-        // Capture file contents before applying (for diff output)
+        // Capture file contents before applying (for diff output).
+        // Only read files that the patches will touch, to avoid reading
+        // unrelated files in large workspaces.
         let mut file_contents_before: HashMap<PathBuf, String> = HashMap::new();
         if show_diff {
-            for patch in &config.patches {
-                let file_path = if config.meta.workspace_relative {
-                    workspace.join(&patch.file)
-                } else {
-                    PathBuf::from(&patch.file)
-                };
+            let target_files: std::collections::HashSet<PathBuf> = config
+                .patches
+                .iter()
+                .map(|p| {
+                    if config.meta.workspace_relative {
+                        workspace.join(&p.file)
+                    } else {
+                        PathBuf::from(&p.file)
+                    }
+                })
+                .collect();
+            for file_path in target_files {
                 if file_path.exists() {
                     if let Ok(content) = fs::read_to_string(&file_path) {
                         file_contents_before.insert(file_path, content);

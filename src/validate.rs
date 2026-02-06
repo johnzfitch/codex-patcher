@@ -118,8 +118,11 @@ impl ParseValidator {
 }
 
 impl Default for ParseValidator {
+    /// # Panics
+    ///
+    /// Panics if tree-sitter parser initialization fails (e.g., out of memory).
     fn default() -> Self {
-        Self::new().expect("Failed to create parse validator")
+        Self::new().expect("tree-sitter parser initialization failed")
     }
 }
 

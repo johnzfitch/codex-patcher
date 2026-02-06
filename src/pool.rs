@@ -19,11 +19,14 @@ thread_local! {
 /// # Example
 ///
 /// ```no_run
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use codex_patcher::pool::with_parser;
 ///
 /// let result = with_parser(|parser| {
 ///     parser.parse_with_source("fn main() {}")
 /// })?;
+/// # Ok(())
+/// # }
 /// ```
 pub fn with_parser<F, R>(f: F) -> Result<R, TreeSitterError>
 where
@@ -34,6 +37,6 @@ where
         if opt.is_none() {
             *opt = Some(RustParser::new()?);
         }
-        Ok(f(opt.as_mut().unwrap()))
+        Ok(f(opt.as_mut().expect("parser was just initialized above")))
     })
 }

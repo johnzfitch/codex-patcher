@@ -85,7 +85,7 @@ impl PatternMatcher {
 
         match matches.len() {
             0 => Err(AstGrepError::NoMatch),
-            1 => Ok(matches.into_iter().next().unwrap()),
+            1 => Ok(matches.into_iter().next().expect("len checked == 1")),
             n => Err(AstGrepError::AmbiguousMatch { count: n }),
         }
     }

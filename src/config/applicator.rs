@@ -343,19 +343,20 @@ fn compute_text_edit(
         });
     }
 
-    // Count matches to ensure uniqueness
-    let match_count = content.matches(search).count();
-    if match_count > 1 {
+    // O(1) ambiguity check: bail if more than one match exists
+    let mut occurrences = content.match_indices(search);
+    let first = occurrences.next();
+    if first.is_some() && occurrences.next().is_some() {
         return Err(ApplicationError::AmbiguousMatch {
             file: file_path.to_path_buf(),
-            count: match_count,
+            count: content.matches(search).count(), // full count only for error message
         });
     }
 
     // Create edit
     match &patch.operation {
         Operation::Replace { text } => {
-            let byte_start = content.find(search).unwrap();
+            let byte_start = first.expect("existence checked above").0;
             let byte_end = byte_start + search.len();
             Ok(Edit::new(file_path, byte_start, byte_end, text.clone(), search))
         }

@@ -286,14 +286,21 @@ fn apply_file_edits(edits: &[Edit]) -> Result<Vec<EditResult>, EditError> {
         edit.validate(&original_content)?;
     }
 
+    // Verify descending sort invariant before applying
+    debug_assert!(
+        edits.windows(2).all(|w| w[0].byte_start >= w[1].byte_start),
+        "edits must be sorted descending by byte_start"
+    );
+
     // Check for overlapping spans (edits are sorted descending by byte_start)
-    // For non-overlapping regions: earlier edit's end <= later edit's start
+    // window[0] has the higher byte_start, window[1] has the lower byte_start.
+    // For non-overlapping regions: the lower edit's end must not exceed the higher edit's start.
     for window in edits.windows(2) {
-        let (later, earlier) = (&window[0], &window[1]);
-        if earlier.byte_end > later.byte_start {
+        let (higher, lower) = (&window[0], &window[1]);
+        if lower.byte_end > higher.byte_start {
             return Err(EditError::InvalidByteRange {
-                byte_start: later.byte_start,
-                byte_end: earlier.byte_end,
+                byte_start: higher.byte_start,
+                byte_end: lower.byte_end,
                 file_len: original_content.len(),
             });
         }

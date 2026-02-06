@@ -63,6 +63,10 @@ impl WorkspaceGuard {
     /// Check if a path is safe to edit.
     ///
     /// Returns the canonicalized absolute path if safe.
+    ///
+    /// Note: This performs canonicalization at validation time. For maximum
+    /// TOCTOU safety, callers should hold an open fd or re-validate immediately
+    /// before write operations in adversarial environments.
     pub fn validate_path(&self, path: impl AsRef<Path>) -> Result<PathBuf, SafetyError> {
         let path = path.as_ref();
 
@@ -76,10 +80,27 @@ impl WorkspaceGuard {
         // Canonicalize to resolve symlinks and .. components
         let canonical = absolute.canonicalize()?;
 
+        self.check_canonical(&canonical)?;
+
+        Ok(canonical)
+    }
+
+    /// Re-validate a previously-validated canonical path.
+    ///
+    /// Call this immediately before write to close the TOCTOU window:
+    /// the path is re-canonicalized and re-checked against workspace
+    /// and forbidden boundaries.
+    pub fn revalidate(&self, path: &Path) -> Result<PathBuf, SafetyError> {
+        let canonical = path.canonicalize()?;
+        self.check_canonical(&canonical)?;
+        Ok(canonical)
+    }
+
+    fn check_canonical(&self, canonical: &Path) -> Result<(), SafetyError> {
         // Check if inside workspace
         if !canonical.starts_with(&self.workspace_root) {
             return Err(SafetyError::OutsideWorkspace {
-                path: canonical,
+                path: canonical.to_path_buf(),
                 workspace: self.workspace_root.clone(),
             });
         }
@@ -88,13 +109,13 @@ impl WorkspaceGuard {
         for forbidden in &self.forbidden_paths {
             if canonical.starts_with(forbidden) {
                 return Err(SafetyError::ForbiddenPath {
-                    path: canonical,
+                    path: canonical.to_path_buf(),
                     forbidden: forbidden.clone(),
                 });
             }
         }
 
-        Ok(canonical)
+        Ok(())
     }
 
     /// Get the workspace root.
@@ -181,6 +202,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_validate_symlink_escape() {
         use std::os::unix::fs::symlink;
 
