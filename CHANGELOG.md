@@ -15,6 +15,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Contributing guidelines
 - Security policy
 - MIT and Apache-2.0 license files
+- Version-specific privacy patch sets for Codex `0.99.0-alpha` releases:
+  - `~/dev/codex-patcher/patches/privacy-v0.99-alpha1-alpha22.toml` (`>=0.99.0-alpha.10, <0.99.0-alpha.14`)
+  - `~/dev/codex-patcher/patches/privacy-v0.99-alpha14-alpha20.toml` (`>=0.99.0-alpha.14, <0.99.0-alpha.21`)
+  - `~/dev/codex-patcher/patches/privacy-v0.99-alpha23.toml` (`>=0.99.0-alpha.21`)
+- New v0.99 integration test coverage in `~/dev/codex-patcher/tests/integration/privacy_patches_v0_99.rs`.
+
+### Changed
+- Enforced patch-file version gating in `~/dev/codex-patcher/src/config/applicator.rs`:
+  incompatible files now return `PatchResult::SkippedVersion` instead of being applied.
+- Updated legacy privacy patch range in `~/dev/codex-patcher/patches/privacy.toml` to
+  `>=0.88.0, <0.99.0-alpha.7` to match upstream web-search signature changes.
+- Improved patch discovery in `~/dev/codex-patcher/src/main.rs` to prefer `<workspace>/patches`
+  with fallback to local `./patches`.
+- Improved workspace version detection in `~/dev/codex-patcher/src/main.rs` by adding
+  `Cargo.toml` parsing fallback when `cargo metadata` is unavailable.
+- Normalized structural replacement trailing-newline handling in
+  `~/dev/codex-patcher/src/config/applicator.rs` to restore idempotent `verify` behavior.
+
+### Security
+- Removed embedded Statsig-like key literals from docs/tests/patch comments and replaced with
+  redacted placeholders to avoid accidental secret propagation.
+
+### Fixed
+- Updated end-to-end and integration expectations for the new privacy patch split and
+  `metrics_exporter` default behavior across alpha version boundaries.
 
 ## [0.1.0] - 2025-01-27
 

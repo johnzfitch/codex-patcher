@@ -7,7 +7,7 @@
 //! - Reports detailed results for each patch
 
 use crate::config::schema::{Operation, PatchConfig, PatchDefinition, Positioning, Query};
-use crate::config::version::VersionError;
+use crate::config::version::{matches_requirement, VersionError};
 use crate::edit::{Edit, EditError, EditResult, EditVerification};
 use crate::sg::PatternMatcher;
 use crate::toml::{
@@ -133,8 +133,44 @@ pub fn apply_patches(
     workspace_root: &Path,
     workspace_version: &str,
 ) -> Vec<(String, Result<PatchResult, ApplicationError>)> {
-    // Phase 4 optimization: Batch operations by file to reduce I/O
-    apply_patches_batched(config, workspace_root, workspace_version)
+    match matches_requirement(workspace_version, config.meta.version_range.as_deref()) {
+        Ok(true) => {
+            // Phase 4 optimization: Batch operations by file to reduce I/O
+            apply_patches_batched(config, workspace_root, workspace_version)
+        }
+        Ok(false) => {
+            let req = config
+                .meta
+                .version_range
+                .as_deref()
+                .unwrap_or("")
+                .trim();
+            let reason = if req.is_empty() {
+                format!("workspace version {workspace_version} does not satisfy patch version constraints")
+            } else {
+                format!(
+                    "workspace version {workspace_version} does not satisfy version_range {req}"
+                )
+            };
+            config
+                .patches
+                .iter()
+                .map(|patch| {
+                    (
+                        patch.id.clone(),
+                        Ok(PatchResult::SkippedVersion {
+                            reason: reason.clone(),
+                        }),
+                    )
+                })
+                .collect()
+        }
+        Err(e) => config
+            .patches
+            .iter()
+            .map(|patch| (patch.id.clone(), Err(ApplicationError::Version(e.clone()))))
+            .collect(),
+    }
 }
 
 /// Optimized batch application that groups patches by file.
@@ -391,6 +427,24 @@ fn compute_structural_edit(
     pattern: &str,
     use_ast_grep: bool,
 ) -> Result<Edit, ApplicationError> {
+    fn align_trailing_newline(current_text: &str, replacement: &str) -> String {
+        // ast-grep spans typically exclude the following newline. Many patch definitions
+        // use triple-quoted strings that include a trailing '\n'. Align to the matched
+        // span so replace patches are idempotent.
+        match (current_text.ends_with('\n'), replacement.ends_with('\n')) {
+            (true, false) => {
+                let mut s = replacement.to_string();
+                s.push('\n');
+                s
+            }
+            (false, true) => replacement
+                .strip_suffix('\n')
+                .unwrap_or(replacement)
+                .to_string(),
+            _ => replacement.to_string(),
+        }
+    }
+
     // Find matches
     let matches = if use_ast_grep {
         find_ast_grep_matches(content, pattern)
@@ -431,14 +485,6 @@ fn compute_structural_edit(
     let (byte_start, byte_end) = matches[0];
     let current_text = &content[byte_start..byte_end];
 
-    // Check idempotency for Replace operation
-    if let Operation::Replace { text } = &patch.operation {
-        if current_text == text {
-            // Return a no-op edit for idempotency
-            return Ok(Edit::new(file_path, 0, 0, String::new(), ""));
-        }
-    }
-
     // Build verification
     let verification = if let Some(verify) = &patch.verify {
         match verify {
@@ -461,7 +507,7 @@ fn compute_structural_edit(
 
     // Get new text based on operation
     let new_text = match &patch.operation {
-        Operation::Replace { text } => text.clone(),
+        Operation::Replace { text } => align_trailing_newline(current_text, text.as_str()),
         Operation::Delete { insert_comment } => {
             if let Some(comment) = insert_comment {
                 comment.clone()
@@ -476,6 +522,11 @@ fn compute_structural_edit(
             });
         }
     };
+
+    // Check idempotency for Replace operation (after normalizing trailing newline).
+    if matches!(patch.operation, Operation::Replace { .. }) && current_text == new_text {
+        return Ok(Edit::new(file_path, 0, 0, String::new(), ""));
+    }
 
     // Create edit without applying
     Ok(Edit {

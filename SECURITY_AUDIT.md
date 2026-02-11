@@ -86,14 +86,12 @@ rg "~/|/home/|/Users/" src/ --type rust
 ```
 
 ### Privacy Patches Content
-The `patches/privacy.toml` file contains:
-- ✅ Upstream Statsig API key (documented for removal)
-- ✅ This is INTENTIONAL - the patch removes these from target code
-- ✅ Comments clearly mark these as "to be removed"
+The `patches/privacy.toml` file intentionally avoids embedding any real API keys:
+- No literal Statsig API key is present in this repo (placeholders only)
+- Patch comments still clearly mark where upstream hardcoded credentials are removed
 
 ```toml
-# This is correct - documenting what the patch removes:
-insert_comment = "// PRIVACY PATCH: Statsig API key removed (was: client-Mkr...)"
+insert_comment = "// PRIVACY PATCH: Statsig API key removed (hardcoded constant)"
 ```
 
 ## Recommendations

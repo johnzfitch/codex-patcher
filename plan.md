@@ -248,7 +248,7 @@ text = '''
 # Privacy Patches Applied (0.88.0):
 # ✓ Disabled Statsig telemetry (was: hardcoded API key to ab.chatgpt.com)
 # ✓ Changed metrics_exporter default from Statsig to None
-# ✓ Removed hardcoded "client-MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO" API key
+# ✓ Removed hardcoded Statsig API key constant (STATSIG_API_KEY)
 # ✓ User config respected: [analytics] enabled = false
 #
 # Additional Privacy Controls:
@@ -882,7 +882,6 @@ cargo check --workspace --all-features
 ```bash
 RUSTFLAGS="-C target-cpu=znver5" cargo build --profile zack
 strings target/zack/codex | grep -c "ab.chatgpt.com"  # Should be 0
-strings target/zack/codex | grep -c "MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO"  # Should be 0
 ```
 
 **Verify idempotency**:

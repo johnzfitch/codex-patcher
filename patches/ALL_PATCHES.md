@@ -49,7 +49,7 @@ just patch ~/dev/codex/codex-rs
 **What it does:**
 - Disables Statsig telemetry resolver (always returns `OtelExporter::None`)
 - Removes hardcoded endpoint: `https://ab.chatgpt.com/otlp/v1/metrics`
-- Removes hardcoded API key: `client-MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO`
+- Removes hardcoded API key constant (`STATSIG_API_KEY`)
 - Changes default metrics_exporter from `Statsig` to `None`
 
 **Files modified:**
@@ -63,7 +63,6 @@ just patch ~/dev/codex/codex-rs
 ```bash
 strings target/zack/codex | grep -i statsig          # Should be empty
 strings target/zack/codex | grep "ab.chatgpt.com"    # Should be empty
-strings target/zack/codex | grep "MkRuleRQBd6"       # Should be empty
 ```
 
 **Status:** ✅ Tested and working on rust-v0.88.0-alpha.17

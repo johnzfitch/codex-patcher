@@ -17,6 +17,8 @@ fn setup_e2e_workspace() -> TempDir {
     // Create directory structure
     fs::create_dir_all(dir.path().join("otel/src")).unwrap();
     fs::create_dir_all(dir.path().join("core/src/config")).unwrap();
+    fs::create_dir_all(dir.path().join("core/src/rollout")).unwrap();
+    fs::create_dir_all(dir.path().join("state/src")).unwrap();
     fs::create_dir_all(dir.path().join("patches")).unwrap();
 
     // Create Cargo.toml for workspace
@@ -40,7 +42,7 @@ edition = "2021"
         r#"
 pub(crate) const STATSIG_OTLP_HTTP_ENDPOINT: &str = "https://ab.chatgpt.com/otlp/v1/metrics";
 pub(crate) const STATSIG_API_KEY_HEADER: &str = "statsig-api-key";
-pub(crate) const STATSIG_API_KEY: &str = "client-MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO";
+pub(crate) const STATSIG_API_KEY: &str = "client-REDACTED";
 
 pub enum OtelExporter {
     None,
@@ -95,6 +97,65 @@ impl Default for OtelConfig {
     )
     .unwrap();
 
+    // Create mock state/src/extract.rs (git origin URL redaction target)
+    fs::write(
+        dir.path().join("state/src/extract.rs"),
+        r#"
+fn apply_meta_line(metadata: &mut ThreadMetadata, meta_line: &MetaLine) {
+    if let Some(git) = meta_line.git.as_ref() {
+        metadata.git_sha = git.commit_hash.clone();
+        metadata.git_branch = git.branch.clone();
+        metadata.git_origin_url = git.repository_url.clone();
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    // Create mock core/src/rollout/metadata.rs (git origin URL redaction target)
+    fs::write(
+        dir.path().join("core/src/rollout/metadata.rs"),
+        r#"
+fn build_metadata(session_meta: &SessionMeta) -> Option<ThreadMetadataBuilder> {
+    let mut builder = ThreadMetadataBuilder::default();
+    if let Some(git) = session_meta.git.as_ref() {
+        builder.git_sha = git.commit_hash.clone();
+        builder.git_branch = git.branch.clone();
+        builder.git_origin_url = git.repository_url.clone();
+    }
+    Some(builder)
+}
+"#,
+    )
+    .unwrap();
+
+    // Create mock core/src/config/mod.rs (web search default patch target)
+    fs::write(
+        dir.path().join("core/src/config/mod.rs"),
+        r#"
+use crate::SandboxPolicy;
+
+pub(crate) fn resolve_web_search_mode_for_turn(
+    explicit_mode: Option<WebSearchMode>,
+    is_azure_responses_endpoint: bool,
+    sandbox_policy: &SandboxPolicy,
+) -> WebSearchMode {
+    if let Some(mode) = explicit_mode {
+        return mode;
+    }
+    if is_azure_responses_endpoint {
+        return WebSearchMode::Disabled;
+    }
+    if matches!(sandbox_policy, SandboxPolicy::DangerFullAccess) {
+        WebSearchMode::Live
+    } else {
+        WebSearchMode::Cached
+    }
+}
+"#,
+    )
+    .unwrap();
+
     dir
 }
 
@@ -136,6 +197,7 @@ fn test_e2e_workflow() {
         stdout.contains("Applied") || stdout.contains("already applied"),
         "Should apply or report already applied"
     );
+    assert!(output.status.success(), "Apply command should succeed");
 
     // Verify files were modified
     let otel_content = fs::read_to_string(workspace_path.join("otel/src/config.rs")).unwrap();
@@ -154,6 +216,7 @@ fn test_e2e_workflow() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     println!("STDOUT:\n{}", stdout);
 
+    assert!(output.status.success(), "Verify command should succeed");
     assert!(
         stdout.contains("Verified") || stdout.contains("verified"),
         "Should verify successfully"
@@ -169,6 +232,7 @@ fn test_e2e_workflow() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     println!("STDOUT:\n{}", stdout);
 
+    assert!(output.status.success(), "Status command should succeed");
     assert!(
         stdout.contains("Patch Status Report"),
         "Should show status report"
@@ -185,7 +249,7 @@ fn test_e2e_workflow() {
     println!("STDOUT:\n{}", stdout);
 
     // Should not fail on re-application
-    assert!(output.status.success() || stdout.contains("already applied"));
+    assert!(output.status.success(), "Re-apply should succeed");
 
     println!("\n✓ End-to-end workflow test passed!");
 }

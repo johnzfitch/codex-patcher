@@ -36,7 +36,7 @@ codex-patcher apply \
 - ✓ Disables `resolve_exporter` function (returns `OtelExporter::None` for Statsig)
 - ✓ Removes `STATSIG_OTLP_HTTP_ENDPOINT` constant (was: `https://ab.chatgpt.com/otlp/v1/metrics`)
 - ✓ Removes `STATSIG_API_KEY_HEADER` constant
-- ✓ Removes `STATSIG_API_KEY` constant (was: `client-MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO`)
+- ✓ Removes `STATSIG_API_KEY` constant (hardcoded API key)
 
 **File: `core/src/config/types.rs`**
 - ✓ Changes `metrics_exporter` default from `Statsig` to `None`
@@ -72,7 +72,6 @@ cargo build --release
 # Verify no telemetry strings in binary
 strings target/release/codex | grep -i statsig        # Should be empty
 strings target/release/codex | grep "ab.chatgpt.com"  # Should be empty
-strings target/release/codex | grep "MkRuleRQBd"      # Should be empty (API key)
 
 # If any of the above find matches, the patches didn't work correctly
 ```

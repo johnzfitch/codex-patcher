@@ -31,7 +31,7 @@
 [meta]
 name = "privacy-patches"
 description = "Comprehensive privacy hardening: disable telemetry, redact git URLs, disable web search"
-version_range = ">=0.88.0"
+version_range = ">=0.88.0, <0.99.0-alpha.7"
 workspace_relative = true
 
 # =============================================================================
@@ -122,7 +122,7 @@ pub(crate) const STATSIG_API_KEY: $TYPE = $VALUE;
 
 [patches.operation]
 type = "delete"
-insert_comment = "// PRIVACY PATCH: Statsig API key removed (was: client-MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO)"
+insert_comment = "// PRIVACY PATCH: Statsig API key removed (hardcoded constant)"
 
 # =============================================================================
 # Patch 5: Change Default Metrics Exporter (types.rs)

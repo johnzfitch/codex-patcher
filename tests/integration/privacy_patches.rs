@@ -25,7 +25,7 @@ use std::collections::HashMap;
 
 pub(crate) const STATSIG_OTLP_HTTP_ENDPOINT: &str = "https://ab.chatgpt.com/otlp/v1/metrics";
 pub(crate) const STATSIG_API_KEY_HEADER: &str = "statsig-api-key";
-pub(crate) const STATSIG_API_KEY: &str = "client-MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO";
+pub(crate) const STATSIG_API_KEY: &str = "client-REDACTED";
 
 pub enum OtelExporter {
     None,
@@ -317,7 +317,7 @@ fn test_privacy_patches_no_telemetry_strings() {
     let has_live_api_key = otel_config
         .lines()
         .filter(|line| !line.trim().starts_with("//"))
-        .any(|line| line.contains("MkRuleRQBd6"));
+        .any(|line| line.contains("STATSIG_API_KEY:"));
 
     assert!(!has_live_endpoint, "Live ab.chatgpt.com endpoint should not exist");
     assert!(!has_live_api_key, "Live API key should not exist");

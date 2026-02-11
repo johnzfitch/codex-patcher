@@ -77,30 +77,48 @@ fn main() -> Result<()> {
     }
 }
 
-/// Helper: Discover all .toml patch files in patches/ directory
+/// Helper: Discover all .toml patch files in a patches/ directory.
+///
+/// Discovery order:
+/// 1. `<workspace>/patches` (allows keeping patch files alongside the target).
+/// 2. `./patches` relative to the current working directory (typical when
+///    running from the codex-patcher repo).
 fn discover_patch_files(workspace: &Path) -> Result<Vec<PathBuf>> {
-    let patches_dir = workspace.join("patches");
-    if !patches_dir.exists() {
-        anyhow::bail!("patches/ directory not found in workspace");
-    }
+    let cwd_patches_dir = env::current_dir()
+        .ok()
+        .map(|cwd| cwd.join("patches"));
+    let workspace_patches_dir = workspace.join("patches");
 
-    let mut files = Vec::new();
-    for entry in WalkDir::new(&patches_dir).max_depth(1) {
-        let entry = entry?;
-        if entry.file_type().is_file()
-            && entry.path().extension().and_then(|s| s.to_str()) == Some("toml")
-        {
-            files.push(entry.path().to_path_buf());
+    let candidate_dirs: Vec<PathBuf> = std::iter::once(workspace_patches_dir.clone())
+        .chain(cwd_patches_dir.into_iter())
+        .collect();
+
+    for patches_dir in candidate_dirs {
+        if !patches_dir.exists() {
+            continue;
+        }
+
+        let mut files = Vec::new();
+        for entry in WalkDir::new(&patches_dir).max_depth(1) {
+            let entry = entry?;
+            if entry.file_type().is_file()
+                && entry.path().extension().and_then(|s| s.to_str()) == Some("toml")
+            {
+                files.push(entry.path().to_path_buf());
+            }
+        }
+
+        files.sort();
+
+        if !files.is_empty() {
+            return Ok(files);
         }
     }
 
-    files.sort();
-
-    if files.is_empty() {
-        anyhow::bail!("No .toml patch files found in {}", patches_dir.display());
-    }
-
-    Ok(files)
+    anyhow::bail!(
+        "No .toml patch files found in either ./patches or {}/patches",
+        workspace.display()
+    )
 }
 
 /// Resolve workspace path using multiple detection strategies
@@ -242,30 +260,56 @@ fn find_codex_via_git() -> Option<PathBuf> {
 fn read_workspace_version(workspace: &Path) -> Result<String> {
     use cargo_metadata::MetadataCommand;
 
-    let metadata = MetadataCommand::new()
-        .manifest_path(workspace.join("Cargo.toml"))
-        .exec()?;
+    let manifest_path = workspace.join("Cargo.toml");
 
-    // Try workspace packages first (for multi-crate workspaces)
-    if let Some(pkg) = metadata.workspace_packages().first() {
-        return Ok(pkg.version.to_string());
-    }
+    // Prefer `cargo metadata` when available since it handles workspaces and
+    // inherited workspace.package versions correctly. However, it can fail in
+    // minimal / mock workspaces (tests) or when the manifest is incomplete.
+    if let Ok(metadata) = MetadataCommand::new().manifest_path(&manifest_path).exec() {
+        // Try workspace packages first (for multi-crate workspaces)
+        if let Some(pkg) = metadata.workspace_packages().first() {
+            return Ok(pkg.version.to_string());
+        }
 
-    // Try root package (for single-crate projects)
-    if let Some(resolve) = &metadata.resolve {
-        if let Some(root) = &resolve.root {
-            if let Some(pkg) = metadata.packages.iter().find(|p| &p.id == root) {
-                return Ok(pkg.version.to_string());
+        // Try root package (for single-crate projects)
+        if let Some(resolve) = &metadata.resolve {
+            if let Some(root) = &resolve.root {
+                if let Some(pkg) = metadata.packages.iter().find(|p| &p.id == root) {
+                    return Ok(pkg.version.to_string());
+                }
             }
+        }
+
+        // Fallback: use first package
+        if let Some(pkg) = metadata.packages.first() {
+            return Ok(pkg.version.to_string());
         }
     }
 
-    // Fallback: use first package
-    if let Some(pkg) = metadata.packages.first() {
-        return Ok(pkg.version.to_string());
+    // Fallback: parse Cargo.toml directly (works for partial fixtures).
+    let manifest = fs::read_to_string(&manifest_path)?;
+    let doc = manifest
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", manifest_path.display()))?;
+
+    if let Some(version) = doc
+        .get("package")
+        .and_then(|pkg| pkg.get("version"))
+        .and_then(|v| v.as_str())
+    {
+        return Ok(version.to_string());
     }
 
-    anyhow::bail!("No package found in {}", workspace.display())
+    if let Some(version) = doc
+        .get("workspace")
+        .and_then(|ws| ws.get("package"))
+        .and_then(|pkg| pkg.get("version"))
+        .and_then(|v| v.as_str())
+    {
+        return Ok(version.to_string());
+    }
+
+    anyhow::bail!("Could not read version from {}", manifest_path.display())
 }
 
 /// Helper: Show unified diff between original and modified content

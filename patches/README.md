@@ -352,7 +352,6 @@ cd ~/dev/codex/codex-rs
 RUSTFLAGS="-C target-cpu=znver5" cargo build --profile zack
 strings target/zack/codex | grep -i statsig           # Should be empty
 strings target/zack/codex | grep "ab.chatgpt.com"     # Should be empty
-strings target/zack/codex | grep "MkRuleRQBd"         # Should be empty (API key)
 ```
 
 ## Best Practices

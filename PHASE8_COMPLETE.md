@@ -64,10 +64,10 @@ cargo run -- apply --workspace /tmp/test-codex-patch/codex-rs --patches patches/
 ```diff
 -pub(crate) const STATSIG_OTLP_HTTP_ENDPOINT: &str = "https://ab.chatgpt.com/otlp/v1/metrics";
 -pub(crate) const STATSIG_API_KEY_HEADER: &str = "statsig-api-key";
--pub(crate) const STATSIG_API_KEY: &str = "client-MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO";
-+// PRIVACY PATCH: Statsig endpoint removed (was: https://ab.chatgpt.com/otlp/v1/metrics)
-+// PRIVACY PATCH: Statsig API key header removed
-+// PRIVACY PATCH: Statsig API key removed (was: client-MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO)
+-pub(crate) const STATSIG_API_KEY: &str = "client-REDACTED";
++// PRIVACY PATCH: Statsig endpoint removed (hardcoded constant)
++// PRIVACY PATCH: Statsig API key header removed (hardcoded constant)
++// PRIVACY PATCH: Statsig API key removed (hardcoded constant)
 
  pub(crate) fn resolve_exporter(exporter: &OtelExporter) -> OtelExporter {
      match exporter {
@@ -116,8 +116,8 @@ cd /tmp/test-codex-patch/codex-rs
 rg "ab\.chatgpt\.com" otel/
 # Output: Only in comments (no hardcoded endpoints)
 
-rg "MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO" .
-# Output: Only in comments (no hardcoded API keys)
+rg "STATSIG_API_KEY" otel/src/config.rs
+# Output: Empty (no hardcoded API keys)
 ```
 
 ## Known Limitations
