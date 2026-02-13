@@ -607,6 +607,7 @@ Create multiple patch files for different concerns:
 ```
 patches/
 ├── privacy.toml       # Privacy patches
+├── memory-safety-regressions.toml # Memory controls + destructive-op confirmation for 0.101.x
 ├── performance.toml   # Performance optimizations
 ├── bugfixes.toml     # Bug fixes
 └── README.md

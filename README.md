@@ -266,6 +266,7 @@ codex-patcher/
 │       └── operations.rs # TOML operations
 ├── patches/             # Patch definitions
 │   ├── privacy.toml     # Telemetry removal
+│   ├── memory-safety-regressions.toml # Memory behavior + safety hardening for 0.101.x
 │   └── performance.toml # Build optimizations
 ├── tests/               # Integration tests
 └── docs/                # Documentation
