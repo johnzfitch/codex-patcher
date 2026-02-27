@@ -7,9 +7,6 @@ use codex_patcher::config::{apply_patches, load_from_path, PatchResult};
 use std::fs;
 use tempfile::TempDir;
 
-pub(crate) const STATSIG_API_KEY_HEADER: &str = "statsig-api-key";
-pub(crate) const STATSIG_API_KEY: &str = "client-REDACTED";
-
 fn patch_file() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("patches/privacy-v0.99.toml")
 }
@@ -257,11 +254,14 @@ fn test_privacy_patches_v0_99_alpha16_apply() {
     let workspace = TempDir::new().unwrap();
     write_alpha16_workspace(&workspace);
 
-    let config = load_from_path(&patch_file()).expect("Failed to load privacy-v0.99.toml");
+    let config = load_from_path(patch_file()).expect("Failed to load privacy-v0.99.toml");
     let results = apply_patches(&config, workspace.path(), "0.99.0-alpha.16");
 
     assert!(
-        results.iter().any(|(_, r)| matches!(r, Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. }))),
+        results.iter().any(|(_, r)| matches!(
+            r,
+            Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. })
+        )),
         "Expected at least one patch to apply for alpha.16"
     );
 
@@ -287,15 +287,19 @@ fn test_privacy_patches_v0_99_alpha23_apply() {
     let workspace = TempDir::new().unwrap();
     write_alpha23_workspace(&workspace);
 
-    let config = load_from_path(&patch_file()).expect("Failed to load privacy-v0.99.toml");
+    let config = load_from_path(patch_file()).expect("Failed to load privacy-v0.99.toml");
     let results = apply_patches(&config, workspace.path(), "0.99.0-alpha.23");
 
     assert!(
-        results.iter().any(|(_, r)| matches!(r, Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. }))),
+        results.iter().any(|(_, r)| matches!(
+            r,
+            Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. })
+        )),
         "Expected at least one patch to apply for alpha.23"
     );
 
-    let turn_metadata = fs::read_to_string(workspace.path().join("core/src/turn_metadata.rs")).unwrap();
+    let turn_metadata =
+        fs::read_to_string(workspace.path().join("core/src/turn_metadata.rs")).unwrap();
     assert!(
         turn_metadata.contains("Disable per-turn metadata headers"),
         "Expected turn metadata header builder to be disabled"
@@ -320,19 +324,23 @@ fn test_privacy_patches_v0_99_version_gating() {
     let workspace = TempDir::new().unwrap();
     write_alpha23_workspace(&workspace);
 
-    let config = load_from_path(&patch_file()).expect("Failed to load privacy-v0.99.toml");
+    let config = load_from_path(patch_file()).expect("Failed to load privacy-v0.99.toml");
 
     // Too new (0.105 range handled by privacy-v0.105-alpha13.toml)
     let results = apply_patches(&config, workspace.path(), "0.105.0-alpha.13");
     assert!(
-        results.iter().all(|(_, r)| matches!(r, Ok(PatchResult::SkippedVersion { .. }))),
+        results
+            .iter()
+            .all(|(_, r)| matches!(r, Ok(PatchResult::SkippedVersion { .. }))),
         "Expected all patches skipped on 0.105.0-alpha.13"
     );
 
     // Too old (below supported range)
     let results = apply_patches(&config, workspace.path(), "0.99.0-alpha.11");
     assert!(
-        results.iter().all(|(_, r)| matches!(r, Ok(PatchResult::SkippedVersion { .. }))),
+        results
+            .iter()
+            .all(|(_, r)| matches!(r, Ok(PatchResult::SkippedVersion { .. }))),
         "Expected all patches skipped on 0.99.0-alpha.11 (below alpha.14)"
     );
 }

@@ -272,7 +272,11 @@ fn test_e2e_workflow() {
     // Copy privacy patches to workspace
     let privacy_patch =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("patches/privacy-v0.99.toml");
-    fs::copy(&privacy_patch, workspace_path.join("patches/privacy-v0.99.toml")).unwrap();
+    fs::copy(
+        &privacy_patch,
+        workspace_path.join("patches/privacy-v0.99.toml"),
+    )
+    .unwrap();
 
     let binary =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/codex-patcher");

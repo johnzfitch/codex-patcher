@@ -306,6 +306,7 @@ fn check_patches_batched(
 }
 
 /// Simulate a batch of edits against a temporary file, preserving result semantics.
+#[allow(clippy::type_complexity)]
 fn simulate_batch_edits(
     file_path: &Path,
     content: &str,

@@ -90,7 +90,7 @@ fn discover_patch_files(workspace: &Path) -> Result<Vec<PathBuf>> {
     let workspace_patches_dir = workspace.join("patches");
 
     let candidate_dirs: Vec<PathBuf> = std::iter::once(workspace_patches_dir.clone())
-        .chain(cwd_patches_dir.into_iter())
+        .chain(cwd_patches_dir)
         .collect();
 
     for patches_dir in candidate_dirs {

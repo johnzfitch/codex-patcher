@@ -253,15 +253,19 @@ fn patch_file() -> std::path::PathBuf {
 #[test]
 fn test_privacy_patches_apply() {
     let workspace = setup_mock_codex_workspace();
-    let config = load_from_path(&patch_file()).expect("Failed to load privacy-v0.99.toml");
+    let config = load_from_path(patch_file()).expect("Failed to load privacy-v0.99.toml");
     let results = apply_patches(&config, workspace.path(), "0.99.0-alpha.16");
 
     let mut applied = 0;
     let mut already_applied = 0;
     for (patch_id, result) in results {
         match result {
-            Ok(PatchResult::Applied { .. }) => { applied += 1; }
-            Ok(PatchResult::AlreadyApplied { .. }) => { already_applied += 1; }
+            Ok(PatchResult::Applied { .. }) => {
+                applied += 1;
+            }
+            Ok(PatchResult::AlreadyApplied { .. }) => {
+                already_applied += 1;
+            }
             Ok(PatchResult::SkippedVersion { reason }) => {
                 println!("⊘ {}: Skipped - {}", patch_id, reason);
             }
@@ -270,7 +274,10 @@ fn test_privacy_patches_apply() {
         }
     }
 
-    assert!(applied > 0 || already_applied > 0, "No patches were applied");
+    assert!(
+        applied > 0 || already_applied > 0,
+        "No patches were applied"
+    );
 
     let otel = fs::read_to_string(workspace.path().join("otel/src/config.rs")).unwrap();
     assert!(
@@ -302,13 +309,16 @@ fn test_privacy_patches_apply() {
 #[test]
 fn test_privacy_patches_idempotent() {
     let workspace = setup_mock_codex_workspace();
-    let config = load_from_path(&patch_file()).expect("Failed to load privacy-v0.99.toml");
+    let config = load_from_path(patch_file()).expect("Failed to load privacy-v0.99.toml");
 
     let count_success = |results: Vec<(String, Result<PatchResult, _>)>| {
         results
             .into_iter()
             .filter(|(_, r)| {
-                matches!(r, Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. }))
+                matches!(
+                    r,
+                    Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. })
+                )
             })
             .count()
     };
@@ -323,7 +333,7 @@ fn test_privacy_patches_idempotent() {
 #[test]
 fn test_privacy_patches_no_telemetry_strings() {
     let workspace = setup_mock_codex_workspace();
-    let config = load_from_path(&patch_file()).expect("Failed to load privacy-v0.99.toml");
+    let config = load_from_path(patch_file()).expect("Failed to load privacy-v0.99.toml");
     apply_patches(&config, workspace.path(), "0.99.0-alpha.16");
 
     let otel = fs::read_to_string(workspace.path().join("otel/src/config.rs")).unwrap();
@@ -338,6 +348,9 @@ fn test_privacy_patches_no_telemetry_strings() {
         .filter(|l| !l.trim().starts_with("//"))
         .any(|l| l.contains("STATSIG_API_KEY:"));
 
-    assert!(!has_live_endpoint, "Live ab.chatgpt.com endpoint must not exist");
+    assert!(
+        !has_live_endpoint,
+        "Live ab.chatgpt.com endpoint must not exist"
+    );
     assert!(!has_live_key, "Live API key must not exist");
 }

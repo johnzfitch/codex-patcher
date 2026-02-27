@@ -102,7 +102,7 @@ impl CompileDiagnostic {
         CompileDiagnostic {
             code,
             message: diag.message.clone(),
-            level: diag.level.clone(),
+            level: diag.level,
             spans,
             suggestions,
             rendered: diag.rendered.clone(),
@@ -162,10 +162,10 @@ impl SourceSpan {
             file,
             byte_start: span.byte_start as usize,
             byte_end: span.byte_end as usize,
-            line_start: span.line_start as usize,
-            line_end: span.line_end as usize,
-            column_start: span.column_start as usize,
-            column_end: span.column_end as usize,
+            line_start: span.line_start,
+            line_end: span.line_end,
+            column_start: span.column_start,
+            column_end: span.column_end,
             is_macro_expansion: span.expansion.is_some(),
             text,
         })

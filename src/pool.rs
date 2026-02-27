@@ -8,7 +8,7 @@ use crate::ts::{RustParser, TreeSitterError};
 use std::cell::RefCell;
 
 thread_local! {
-    static RUST_PARSER: RefCell<Option<RustParser>> = RefCell::new(None);
+    static RUST_PARSER: RefCell<Option<RustParser>> = const { RefCell::new(None) };
 }
 
 /// Execute function with pooled parser instance.
