@@ -221,8 +221,9 @@ fn find_codex_via_git() -> Option<PathBuf> {
     // Extract the URL (second field) and check for the repo path.
     let is_codex_remote = remotes.lines().any(|line| {
         let url = line.split_whitespace().nth(1).unwrap_or("");
-        // HTTPS: github.com/openai/codex or github.com/openai/codex.git
-        // SSH:   github.com:openai/codex or github.com:openai/codex.git
+        // HTTPS:   https://github.com/openai/codex[.git]
+        // SCP SSH: git@github.com:openai/codex[.git]  → ends_with :openai/codex
+        // SSH URL: ssh://git@github.com/openai/codex  → ends_with /openai/codex
         let normalized = url.trim_end_matches(".git").trim_end_matches('/');
         normalized.ends_with("github.com/openai/codex")
             || normalized.ends_with("github.com:openai/codex")

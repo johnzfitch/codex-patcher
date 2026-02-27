@@ -15,12 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Contributing guidelines
 - Security policy
 - MIT and Apache-2.0 license files
-- Version-specific privacy patch sets for Codex `0.99.0-alpha` releases:
-  - `patches/privacy-v0.99-alpha1-alpha22.toml` (`>=0.99.0-alpha.10, <0.99.0-alpha.14`)
-  - `patches/privacy-v0.99-alpha14-alpha20.toml` (`>=0.99.0-alpha.14, <0.99.0-alpha.21`)
-  - `patches/privacy-v0.99-alpha23.toml` (`>=0.99.0-alpha.21, <0.105.0-alpha.13`)
-- Version-specific privacy patch set for Codex `0.105.x` releases:
-  - `patches/privacy-v0.105-alpha13.toml` (`>=0.105.0-alpha.13, <0.106.0`)
+- Version-specific privacy patch sets (two consolidated files):
+  - `patches/privacy-v0.99.toml` (`>=0.99.0-alpha.14, <0.105.0-alpha.13`)
+  - `patches/privacy-v0.105-alpha13.toml` (`>=0.105.0-alpha.13`)
 - `patches/timing-loops.toml`: replace polling loops with event-driven waiting (shutdown, PTY, commit animation)
 - New v0.99 integration test coverage in `tests/integration/privacy_patches_v0_99.rs`.
 

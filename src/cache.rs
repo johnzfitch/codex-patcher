@@ -12,8 +12,10 @@ use std::collections::HashMap;
 const MAX_CACHE_ENTRIES: usize = 256;
 
 thread_local! {
+    // Key is "<lang_debug>:<pattern_str>" so same pattern string for different
+    // languages never collides (e.g., Rust vs Python).
     static PATTERN_CACHE: RefCell<HashMap<String, Pattern>> =
-        RefCell::new(HashMap::with_capacity(128));
+        RefCell::new(HashMap::new());
 }
 
 /// Get a compiled pattern from cache, or compile and cache it.
@@ -22,11 +24,15 @@ thread_local! {
 /// When the cap is reached, the cache is cleared and rebuilt on demand.
 /// Cache hits provide ~10x speedup over recompilation.
 pub fn get_or_compile_pattern(pattern_str: &str, lang: SupportLang) -> Pattern {
+    // Include lang in key: same pattern string for different languages must not
+    // collide (e.g., `$FOO` means different things in Rust vs Python).
+    let cache_key = format!("{lang:?}:{pattern_str}");
+
     PATTERN_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
 
         // Check if pattern is already compiled
-        if let Some(p) = cache.get(pattern_str) {
+        if let Some(p) = cache.get(&cache_key) {
             return p.clone();
         }
 
@@ -37,7 +43,7 @@ pub fn get_or_compile_pattern(pattern_str: &str, lang: SupportLang) -> Pattern {
 
         // Compile and cache the pattern
         let compiled = Pattern::new(pattern_str, lang);
-        cache.insert(pattern_str.to_string(), compiled.clone());
+        cache.insert(cache_key, compiled.clone());
         compiled
     })
 }

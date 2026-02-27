@@ -464,12 +464,16 @@ fn apply_patches_batched(
         let content = match fs::read_to_string(&file_path) {
             Ok(c) => c,
             Err(source) => {
+                // Preserve kind + message; std::io::Error is not Clone so we
+                // reconstruct one per patch from the original error's text.
+                let kind = source.kind();
+                let msg = source.to_string();
                 for patch in patches {
                     all_results.push((
                         patch.id.clone(),
                         Err(ApplicationError::Io {
                             path: file_path.clone(),
-                            source: source.kind().into(),
+                            source: std::io::Error::new(kind, msg.clone()),
                         }),
                     ));
                 }
@@ -490,6 +494,10 @@ fn apply_patches_batched(
 
         // Apply all edits for this file in batch
         if !edits_with_ids.is_empty() {
+            // apply_batch sorts by byte_start descending internally.
+            // Sort edits_with_ids the same way so zip() aligns correctly.
+            edits_with_ids.sort_by(|(_, a), (_, b)| b.byte_start.cmp(&a.byte_start));
+
             let edits: Vec<Edit> = edits_with_ids.iter().map(|(_, e)| e.clone()).collect();
 
             match Edit::apply_batch(edits) {
@@ -527,6 +535,15 @@ fn apply_patches_batched(
         // Add errors that occurred during edit computation
         all_results.extend(patch_errors);
     }
+
+    // Restore config.patches order — HashMap iteration is unordered.
+    let patch_order: std::collections::HashMap<&str, usize> = config
+        .patches
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.id.as_str(), i))
+        .collect();
+    all_results.sort_by_key(|(id, _)| patch_order.get(id.as_str()).copied().unwrap_or(usize::MAX));
 
     all_results
 }
