@@ -17,3 +17,29 @@ Thumbs.db
 
 # Testing
 /fixtures/output/
+
+# AI session artifacts (phase notes, planning docs, handoffs)
+PHASE*.md
+HANDOFF_*.md
+PLAN_*.md
+plan.md
+spec.md
+PERFORMANCE_OPTIMIZATIONS.md
+SECURITY_AUDIT.md
+analysis/
+subagent-logs/
+
+# Development/internal documentation
+CLAUDE.md
+AGENTS.md
+ADDING_PATCHES.md
+EXAMPLES.md
+PATCH_SUMMARY.md
+PATCH_WORKFLOW.md
+PATH_DETECTION_DESIGN.md
+KNOWN_ISSUES.md
+USAGE_EXAMPLES.md
+
+# Development tools
+find-subagent-limit.sh
+justfile
