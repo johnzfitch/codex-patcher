@@ -554,11 +554,8 @@ fn test_v099_ranges_against_v0100_alpha2() {
     let patch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     // Bounded 0.99-alpha ranges must NOT match 0.100 (upper bound blocks it).
     let cases = [
-        ("patches/privacy.toml", false),
-        ("patches/privacy-v0.99-alpha1-alpha22.toml", false),
-        ("patches/privacy-v0.99-alpha14-alpha20.toml", false),
+        ("patches/privacy-v0.99.toml", false),
         ("patches/sandbox-metrics.toml", false),
-        ("patches/privacy-v0.99-alpha23.toml", false),
         ("patches/privacy-v0.105-alpha13.toml", false),
     ];
 
@@ -578,9 +575,7 @@ fn test_sandbox_metric_patch_ranges_are_mutually_exclusive() {
     let patch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let patch_files = [
         "patches/sandbox-metrics.toml",
-        "patches/privacy-v0.99-alpha1-alpha22.toml",
-        "patches/privacy-v0.99-alpha14-alpha20.toml",
-        "patches/privacy-v0.99-alpha23.toml",
+        "patches/privacy-v0.99.toml",
         "patches/privacy-v0.105-alpha13.toml",
     ];
     let patch_configs: Vec<_> = patch_files
@@ -592,8 +587,8 @@ fn test_sandbox_metric_patch_ranges_are_mutually_exclusive() {
         .collect();
 
     for version in [
-        "0.99.0-alpha.5",
         "0.99.0-alpha.11",
+        "0.99.0-alpha.14",
         "0.99.0-alpha.18",
         "0.99.0-alpha.23",
         "0.100.0-alpha.2",

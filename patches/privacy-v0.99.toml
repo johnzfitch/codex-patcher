@@ -1,0 +1,382 @@
+# =============================================================================
+# PRIVACY PATCHES (v0.99.0-alpha.14 and later, up to 0.105)
+# =============================================================================
+#
+# Merged coverage for all Codex 0.99.x alpha releases from alpha.14 onward.
+# Earlier alphas (pre-alpha.14) are no longer supported.
+#
+# Key goals:
+# - Disable Statsig telemetry export (resolver returns None, remove constants)
+# - Ensure metrics exporter defaults to None in both types + config loading
+# - Disable web search by default (no sandbox-driven enablement)
+# - Disable per-turn metadata headers (git remotes / commit hash / sandbox tag)
+# - Drop sandbox implementation/policy tags from tool telemetry
+# - Redact git origin URL from local state and rollout metadata
+#
+# Affected files (codex-rs workspace-relative):
+# - otel/src/config.rs
+# - core/src/config/types.rs
+# - core/src/config/mod.rs
+# - core/src/turn_metadata.rs
+# - core/src/tools/registry.rs
+# - state/src/extract.rs
+# - core/src/rollout/metadata.rs
+#
+# Note on alpha.14-alpha.20 compatibility:
+# The turn_metadata patch targets the alpha.21+ function signature
+# (_cwd: &Path, _sandbox: Option<&str>). Users on alpha.14-alpha.20
+# will see a compile error on that one function after patching; all
+# other patches apply correctly.
+#
+# =============================================================================
+
+[meta]
+name = "privacy-patches-v0.99"
+description = "Privacy hardening for 0.99.0-alpha.14+: disable Statsig telemetry, web search defaults, per-turn metadata headers, and sandbox metric tags"
+version_range = ">=0.99.0-alpha.14, <0.105.0-alpha.13"
+workspace_relative = true
+
+# =============================================================================
+# Telemetry: Disable Statsig Resolver + Remove Hardcoded Constants
+# =============================================================================
+
+[[patches]]
+id = "privacy-v0.99-disable-statsig-resolver"
+file = "otel/src/config.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+pub(crate) fn resolve_exporter(exporter: &OtelExporter) -> OtelExporter {
+    $$$
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub(crate) fn resolve_exporter(exporter: &OtelExporter) -> OtelExporter {
+    match exporter {
+        OtelExporter::Statsig => {
+            // PRIVACY PATCH: Always return None to disable Statsig telemetry.
+            //
+            // Upstream behavior only disables in tests / with a feature flag.
+            OtelExporter::None
+        }
+        _ => exporter.clone(),
+    }
+}
+'''
+
+[[patches]]
+id = "privacy-v0.99-remove-statsig-endpoint"
+file = "otel/src/config.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+pub(crate) const STATSIG_OTLP_HTTP_ENDPOINT: $TYPE = $VALUE;
+'''
+
+[patches.operation]
+type = "delete"
+insert_comment = "// PRIVACY PATCH: Statsig endpoint removed (hardcoded constant)"
+
+[[patches]]
+id = "privacy-v0.99-remove-statsig-header"
+file = "otel/src/config.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+pub(crate) const STATSIG_API_KEY_HEADER: $TYPE = $VALUE;
+'''
+
+[patches.operation]
+type = "delete"
+insert_comment = "// PRIVACY PATCH: Statsig API key header removed (hardcoded constant)"
+
+[[patches]]
+id = "privacy-v0.99-remove-statsig-api-key"
+file = "otel/src/config.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+pub(crate) const STATSIG_API_KEY: $TYPE = $VALUE;
+'''
+
+[patches.operation]
+type = "delete"
+insert_comment = "// PRIVACY PATCH: Statsig API key removed (hardcoded constant)"
+
+# =============================================================================
+# Telemetry: Default Metrics Exporter = None (types.rs)
+# =============================================================================
+
+[[patches]]
+id = "privacy-v0.99-default-metrics-none-types"
+file = "core/src/config/types.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+impl Default for OtelConfig {
+    fn default() -> Self {
+        $$$
+    }
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+impl Default for OtelConfig {
+    fn default() -> Self {
+        OtelConfig {
+            log_user_prompt: false,
+            environment: DEFAULT_OTEL_ENVIRONMENT.to_owned(),
+            exporter: OtelExporterKind::None,
+            trace_exporter: OtelExporterKind::None,
+            metrics_exporter: OtelExporterKind::None, // PRIVACY PATCH: Changed from Statsig
+        }
+    }
+}
+'''
+
+# =============================================================================
+# Telemetry: Config Loading Defaults metrics_exporter=Statsig (config/mod.rs)
+# =============================================================================
+
+[[patches]]
+id = "privacy-v0.99-config-metrics-exporter-default-none"
+file = "core/src/config/mod.rs"
+
+[patches.query]
+type = "text"
+search = '''
+                let metrics_exporter = t.metrics_exporter.unwrap_or(OtelExporterKind::Statsig);
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+                let metrics_exporter = t.metrics_exporter.unwrap_or(OtelExporterKind::None); // PRIVACY PATCH: Default to None
+'''
+
+[[patches]]
+id = "privacy-v0.99-metrics-exporter-test-default-none"
+file = "core/src/config/mod.rs"
+
+[patches.query]
+type = "text"
+search = '''
+        assert_eq!(config.otel.metrics_exporter, OtelExporterKind::Statsig);
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+        assert_eq!(config.otel.metrics_exporter, OtelExporterKind::None); // PRIVACY PATCH
+'''
+
+# =============================================================================
+# Web Search: Default Disabled + Respect Preference (config/mod.rs)
+# =============================================================================
+
+[[patches]]
+id = "privacy-v0.99-web-search-default-disabled"
+file = "core/src/config/mod.rs"
+
+[patches.query]
+type = "text"
+search = '''
+        let web_search_mode = resolve_web_search_mode(&cfg, &config_profile, &features)
+            .unwrap_or(WebSearchMode::Cached);
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+        let web_search_mode = resolve_web_search_mode(&cfg, &config_profile, &features)
+            .unwrap_or(WebSearchMode::Disabled); // PRIVACY PATCH: Default to Disabled
+'''
+
+[[patches]]
+id = "privacy-v0.99-web-search-no-sandbox-upgrade"
+file = "core/src/config/mod.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+pub(crate) fn resolve_web_search_mode_for_turn($$$PARAMS) -> WebSearchMode {
+    $$$BODY
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub(crate) fn resolve_web_search_mode_for_turn(
+    web_search_mode: &Constrained<WebSearchMode>,
+    _sandbox_policy: &SandboxPolicy,
+) -> WebSearchMode {
+    // PRIVACY PATCH: Do not upgrade to Live based on sandbox policy.
+    // Respect the configured preference; otherwise disable.
+    let preferred = web_search_mode.value();
+    if web_search_mode.can_set(&preferred).is_ok() {
+        return preferred;
+    }
+    WebSearchMode::Disabled
+}
+'''
+
+[[patches]]
+id = "privacy-v0.99-web-search-test-no-live-upgrade"
+file = "core/src/config/mod.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    fn web_search_mode_for_turn_prefers_live_for_danger_full_access() {
+        let web_search_mode = Constrained::allow_any(WebSearchMode::Cached);
+        let mode =
+            resolve_web_search_mode_for_turn(&web_search_mode, &SandboxPolicy::DangerFullAccess);
+
+        assert_eq!(mode, WebSearchMode::Live);
+    }
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    fn web_search_mode_for_turn_prefers_live_for_danger_full_access() {
+        let web_search_mode = Constrained::allow_any(WebSearchMode::Cached);
+        let mode =
+            resolve_web_search_mode_for_turn(&web_search_mode, &SandboxPolicy::DangerFullAccess);
+
+        // PRIVACY PATCH: Never auto-upgrade to Live based on sandbox policy.
+        assert_eq!(mode, WebSearchMode::Cached);
+    }
+'''
+
+# =============================================================================
+# Tool Telemetry: Drop Sandbox Metric Tags (core/src/tools/registry.rs)
+# =============================================================================
+# Prevents emitting sandbox implementation/policy info as OTEL metric tags.
+# Uses ast-grep to handle indentation variance across alpha versions.
+
+[[patches]]
+id = "privacy-v0.99-drop-tool-sandbox-metric-tags"
+file = "core/src/tools/registry.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+let metric_tags = [
+    (
+        "sandbox",
+        sandbox_tag($$$SANDBOX_ARGS),
+    ),
+    (
+        "sandbox_policy",
+        sandbox_policy_tag($$$POLICY_ARGS),
+    ),
+];
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+        let _ = (sandbox_tag, sandbox_policy_tag); // PRIVACY PATCH: Keep symbols referenced (avoid unused warnings)
+        let metric_tags: [(&str, &str); 0] = []; // PRIVACY PATCH: Drop sandbox tags from tool telemetry
+'''
+
+# =============================================================================
+# Turn Metadata Header: Disable (core/src/turn_metadata.rs)
+# =============================================================================
+# Prevent sending git remotes / commit hashes / sandbox tag in per-turn headers.
+# Targets the alpha.21+ signature (_cwd: &Path, _sandbox: Option<&str>).
+
+[[patches]]
+id = "privacy-v0.99-disable-turn-metadata-header"
+file = "core/src/turn_metadata.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+pub async fn build_turn_metadata_header($$$PARAMS) -> Option<String> {
+    $$$BODY
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub async fn build_turn_metadata_header(_cwd: &Path, _sandbox: Option<&str>) -> Option<String> {
+    // PRIVACY PATCH: Disable per-turn metadata headers (git remotes / commit hashes / sandbox tag).
+    //
+    // Keep references to the original helpers/types so this module remains warning-clean.
+    let _ = (get_git_repo_root, get_head_commit_hash, get_git_remote_urls_assume_git_repo);
+    let _ = TurnMetadataBag {
+        turn_id: None,
+        workspaces: BTreeMap::new(),
+        sandbox: None,
+    };
+    None
+}
+'''
+
+# =============================================================================
+# Git Tracking: Redact git_origin_url from Local State + Rollout Metadata
+# =============================================================================
+
+[[patches]]
+id = "privacy-v0.99-redact-git-origin-url-state"
+file = "state/src/extract.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    if let Some(git) = meta_line.git.as_ref() {
+        metadata.git_sha = git.commit_hash.clone();
+        metadata.git_branch = git.branch.clone();
+        metadata.git_origin_url = git.repository_url.clone();
+    }
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    if let Some(git) = meta_line.git.as_ref() {
+        metadata.git_sha = git.commit_hash.clone();
+        metadata.git_branch = git.branch.clone();
+        // PRIVACY PATCH: Redact git origin URL to prevent leaking repo identity
+        metadata.git_origin_url = None;
+    }
+'''
+
+[[patches]]
+id = "privacy-v0.99-redact-git-origin-url-rollout"
+file = "core/src/rollout/metadata.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    if let Some(git) = session_meta.git.as_ref() {
+        builder.git_sha = git.commit_hash.clone();
+        builder.git_branch = git.branch.clone();
+        builder.git_origin_url = git.repository_url.clone();
+    }
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    if let Some(git) = session_meta.git.as_ref() {
+        builder.git_sha = git.commit_hash.clone();
+        builder.git_branch = git.branch.clone();
+        // PRIVACY PATCH: Redact git origin URL to prevent leaking repo identity
+        builder.git_origin_url = None;
+    }
+'''

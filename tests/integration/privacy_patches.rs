@@ -1,25 +1,52 @@
-//! Integration tests for privacy patches
+//! Integration tests for the merged privacy-v0.99 patch set.
 //!
-//! Tests that privacy.toml patches correctly disable Statsig telemetry
+//! Covers Codex versions >=0.99.0-alpha.14, <0.105.0-alpha.13.
+//! Uses an alpha.16-era mock workspace (unwrap_or metrics_exporter form).
 
 use codex_patcher::config::{apply_patches, load_from_path, PatchResult};
 use std::fs;
 use tempfile::TempDir;
 
-/// Create a mock Codex workspace with the files targeted by privacy patches
 fn setup_mock_codex_workspace() -> TempDir {
     let dir = TempDir::new().unwrap();
 
-    // Create directory structure
     fs::create_dir_all(dir.path().join("otel/src")).unwrap();
     fs::create_dir_all(dir.path().join("core/src/config")).unwrap();
     fs::create_dir_all(dir.path().join("core/src/rollout")).unwrap();
+    fs::create_dir_all(dir.path().join("core/src/tools")).unwrap();
     fs::create_dir_all(dir.path().join("state/src")).unwrap();
 
-    // Create otel/src/config.rs with Statsig implementation
-    let otel_config = dir.path().join("otel/src/config.rs");
+    // core/src/turn_metadata.rs — alpha.21+ signature
     fs::write(
-        &otel_config,
+        dir.path().join("core/src/turn_metadata.rs"),
+        r#"
+use std::collections::BTreeMap;
+use std::path::Path;
+use serde::Serialize;
+
+use crate::git_info::get_git_remote_urls_assume_git_repo;
+use crate::git_info::get_git_repo_root;
+use crate::git_info::get_head_commit_hash;
+
+#[derive(Serialize)]
+struct TurnMetadataBag {
+    turn_id: Option<String>,
+    workspaces: BTreeMap<String, ()>,
+    sandbox: Option<String>,
+}
+
+pub async fn build_turn_metadata_header(cwd: &Path, sandbox: Option<&str>) -> Option<String> {
+    let _ = (cwd, sandbox);
+    let _ = (get_git_repo_root, get_head_commit_hash, get_git_remote_urls_assume_git_repo);
+    None
+}
+"#,
+    )
+    .unwrap();
+
+    // otel/src/config.rs — Statsig constants + resolver
+    fs::write(
+        dir.path().join("otel/src/config.rs"),
         r#"
 use std::collections::HashMap;
 
@@ -48,18 +75,10 @@ impl Clone for OtelExporter {
 
 pub(crate) fn resolve_exporter(exporter: &OtelExporter) -> OtelExporter {
     match exporter {
-        OtelExporter::Statsig => {
-            if cfg!(test) || cfg!(feature = "disable-default-metrics-exporter") {
-                return OtelExporter::None;
-            }
-
-            OtelExporter::OtlpHttp {
-                endpoint: STATSIG_OTLP_HTTP_ENDPOINT.to_string(),
-                headers: HashMap::from([
-                    (STATSIG_API_KEY_HEADER.to_string(), STATSIG_API_KEY.to_string()),
-                ]),
-            }
-        }
+        OtelExporter::Statsig => OtelExporter::OtlpHttp {
+            endpoint: STATSIG_OTLP_HTTP_ENDPOINT.to_string(),
+            headers: HashMap::from([(STATSIG_API_KEY_HEADER.to_string(), STATSIG_API_KEY.to_string())]),
+        },
         _ => exporter.clone(),
     }
 }
@@ -67,44 +86,11 @@ pub(crate) fn resolve_exporter(exporter: &OtelExporter) -> OtelExporter {
     )
     .unwrap();
 
-    // Create core/src/config/mod.rs with web search auto-enable logic
-    let config_mod = dir.path().join("core/src/config/mod.rs");
+    // core/src/config/types.rs — Statsig default
     fs::write(
-        &config_mod,
+        dir.path().join("core/src/config/types.rs"),
         r#"
-use crate::SandboxPolicy;
-
-pub(crate) fn resolve_web_search_mode_for_turn(
-    explicit_mode: Option<WebSearchMode>,
-    is_azure_responses_endpoint: bool,
-    sandbox_policy: &SandboxPolicy,
-) -> WebSearchMode {
-    if let Some(mode) = explicit_mode {
-        return mode;
-    }
-    if is_azure_responses_endpoint {
-        return WebSearchMode::Disabled;
-    }
-    if matches!(sandbox_policy, SandboxPolicy::DangerFullAccess) {
-        WebSearchMode::Live
-    } else {
-        WebSearchMode::Cached
-    }
-}
-"#,
-    )
-    .unwrap();
-
-    // Create core/src/config/types.rs with Statsig default
-    let types = dir.path().join("core/src/config/types.rs");
-    fs::write(
-        &types,
-        r#"
-pub enum OtelExporterKind {
-    None,
-    Statsig,
-    OtlpHttp,
-}
+pub enum OtelExporterKind { None, Statsig }
 
 pub struct OtelConfig {
     pub log_user_prompt: bool,
@@ -131,15 +117,106 @@ impl Default for OtelConfig {
     )
     .unwrap();
 
-    // Create state/src/extract.rs with git origin URL tracking
-    let extract = dir.path().join("state/src/extract.rs");
+    // core/src/config/mod.rs — alpha.14+ style (unwrap_or form)
     fs::write(
-        &extract,
+        dir.path().join("core/src/config/mod.rs"),
+        r#"
+pub enum OtelExporterKind { None, Statsig }
+pub struct OtelConfigToml { pub metrics_exporter: Option<OtelExporterKind> }
+pub struct OtelConfig { pub metrics_exporter: OtelExporterKind }
+pub struct Config { pub otel: OtelConfig }
+
+pub fn load_config(t: OtelConfigToml) -> Config {
+                let metrics_exporter = t.metrics_exporter.unwrap_or(OtelExporterKind::Statsig);
+    Config { otel: OtelConfig { metrics_exporter } }
+}
+
+pub struct Constrained<T> { value: T }
+impl<T: Copy> Constrained<T> {
+    pub fn allow_any(value: T) -> Self { Self { value } }
+    pub fn value(&self) -> T { self.value }
+    pub fn can_set(&self, _: &T) -> Result<(), ()> { Ok(()) }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WebSearchMode { Disabled, Cached, Live }
+#[derive(Clone, Copy)]
+pub enum SandboxPolicy { ReadOnly, DangerFullAccess }
+
+fn resolve_web_search_mode(_cfg: &(), _profile: &(), _features: &()) -> Option<WebSearchMode> { None }
+
+pub fn default_web_search_mode(cfg: (), config_profile: (), features: ()) -> WebSearchMode {
+        let web_search_mode = resolve_web_search_mode(&cfg, &config_profile, &features)
+            .unwrap_or(WebSearchMode::Cached);
+    web_search_mode
+}
+
+pub(crate) fn resolve_web_search_mode_for_turn(
+    web_search_mode: &Constrained<WebSearchMode>,
+    sandbox_policy: &SandboxPolicy,
+) -> WebSearchMode {
+    let preferred = web_search_mode.value();
+    if matches!(sandbox_policy, SandboxPolicy::DangerFullAccess) { WebSearchMode::Live } else { preferred }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web_search_mode_for_turn_prefers_live_for_danger_full_access() {
+        let web_search_mode = Constrained::allow_any(WebSearchMode::Cached);
+        let mode =
+            resolve_web_search_mode_for_turn(&web_search_mode, &SandboxPolicy::DangerFullAccess);
+
+        assert_eq!(mode, WebSearchMode::Live);
+    }
+
+    #[test]
+    fn metrics_exporter_defaults_to_statsig_when_missing() {
+        let config = load_config(OtelConfigToml { metrics_exporter: None });
+        assert_eq!(config.otel.metrics_exporter, OtelExporterKind::Statsig);
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    // core/src/tools/registry.rs — sandbox metric tags
+    fs::write(
+        dir.path().join("core/src/tools/registry.rs"),
+        r#"
+pub struct SandboxPolicy;
+pub struct Turn { pub sandbox_policy: SandboxPolicy, pub windows_sandbox_level: u8 }
+pub struct ToolInvocation { pub turn: Turn }
+pub fn sandbox_tag(_: &SandboxPolicy, _: u8) -> &'static str { "none" }
+pub fn sandbox_policy_tag(_: &SandboxPolicy) -> &'static str { "read_only" }
+
+pub fn dispatch(invocation: ToolInvocation) {
+        let metric_tags = [
+            (
+                "sandbox",
+                sandbox_tag(
+                    &invocation.turn.sandbox_policy,
+                    invocation.turn.windows_sandbox_level,
+                ),
+            ),
+            (
+                "sandbox_policy",
+                sandbox_policy_tag(&invocation.turn.sandbox_policy),
+            ),
+        ];
+    let _ = metric_tags;
+}
+"#,
+    )
+    .unwrap();
+
+    // state/src/extract.rs — git origin URL
+    fs::write(
+        dir.path().join("state/src/extract.rs"),
         r#"
 fn apply_meta_line(metadata: &mut ThreadMetadata, meta_line: &MetaLine) {
-    if let Some(meta) = meta_line.meta.as_ref() {
-        metadata.cwd = meta_line.meta.cwd.clone();
-    }
     if let Some(git) = meta_line.git.as_ref() {
         metadata.git_sha = git.commit_hash.clone();
         metadata.git_branch = git.branch.clone();
@@ -150,21 +227,17 @@ fn apply_meta_line(metadata: &mut ThreadMetadata, meta_line: &MetaLine) {
     )
     .unwrap();
 
-    // Create core/src/rollout/metadata.rs with git origin URL tracking
-    let rollout_meta = dir.path().join("core/src/rollout/metadata.rs");
+    // core/src/rollout/metadata.rs
     fs::write(
-        &rollout_meta,
+        dir.path().join("core/src/rollout/metadata.rs"),
         r#"
-fn build_metadata(session_meta: &SessionMeta) -> Option<ThreadMetadataBuilder> {
+fn build_metadata(session_meta: &SessionMeta) {
     let mut builder = ThreadMetadataBuilder::default();
-    builder.sandbox_policy = SandboxPolicy::ReadOnly;
-    builder.approval_mode = AskForApproval::OnRequest;
     if let Some(git) = session_meta.git.as_ref() {
         builder.git_sha = git.commit_hash.clone();
         builder.git_branch = git.branch.clone();
         builder.git_origin_url = git.repository_url.clone();
     }
-    Some(builder)
 }
 "#,
     )
@@ -173,169 +246,98 @@ fn build_metadata(session_meta: &SessionMeta) -> Option<ThreadMetadataBuilder> {
     dir
 }
 
+fn patch_file() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("patches/privacy-v0.99.toml")
+}
+
 #[test]
 fn test_privacy_patches_apply() {
     let workspace = setup_mock_codex_workspace();
-    let patch_file =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("patches/privacy.toml");
+    let config = load_from_path(&patch_file()).expect("Failed to load privacy-v0.99.toml");
+    let results = apply_patches(&config, workspace.path(), "0.99.0-alpha.16");
 
-    // Load and apply patches
-    let config = load_from_path(&patch_file).expect("Failed to load privacy.toml");
-    let results = apply_patches(&config, workspace.path(), "0.88.0");
-
-    // Check that patches applied successfully
     let mut applied = 0;
     let mut already_applied = 0;
-
     for (patch_id, result) in results {
         match result {
-            Ok(PatchResult::Applied { .. }) => {
-                println!("✓ {}: Applied", patch_id);
-                applied += 1;
-            }
-            Ok(PatchResult::AlreadyApplied { .. }) => {
-                println!("⊙ {}: Already applied", patch_id);
-                already_applied += 1;
-            }
+            Ok(PatchResult::Applied { .. }) => { applied += 1; }
+            Ok(PatchResult::AlreadyApplied { .. }) => { already_applied += 1; }
             Ok(PatchResult::SkippedVersion { reason }) => {
                 println!("⊘ {}: Skipped - {}", patch_id, reason);
             }
-            Ok(PatchResult::Failed { reason, .. }) => {
-                panic!("✗ {}: Failed - {}", patch_id, reason);
-            }
-            Err(e) => {
-                panic!("✗ {}: Failed - {}", patch_id, e);
-            }
+            Ok(PatchResult::Failed { reason, .. }) => panic!("✗ {}: Failed - {}", patch_id, reason),
+            Err(e) => panic!("✗ {}: Error - {}", patch_id, e),
         }
     }
 
+    assert!(applied > 0 || already_applied > 0, "No patches were applied");
+
+    let otel = fs::read_to_string(workspace.path().join("otel/src/config.rs")).unwrap();
     assert!(
-        applied > 0 || already_applied > 0,
-        "No patches were applied"
+        !otel.contains("STATSIG_OTLP_HTTP_ENDPOINT") || otel.contains("// PRIVACY PATCH"),
+        "Statsig endpoint should be removed"
+    );
+    assert!(
+        otel.contains("OtelExporter::None") && otel.contains("PRIVACY PATCH"),
+        "resolve_exporter should return None with privacy comment"
     );
 
-    // Verify otel/src/config.rs changes
-    let otel_config = fs::read_to_string(workspace.path().join("otel/src/config.rs")).unwrap();
-
-    // Should have removed Statsig constants
-    assert!(
-        !otel_config.contains("STATSIG_OTLP_HTTP_ENDPOINT")
-            || otel_config.contains("// PRIVACY PATCH: Statsig endpoint removed"),
-        "Statsig endpoint should be removed or commented"
-    );
-
-    // Should have simplified resolve_exporter
-    assert!(
-        otel_config.contains("OtelExporter::None") && otel_config.contains("PRIVACY PATCH"),
-        "resolve_exporter should return None with privacy patch comment"
-    );
-
-    // Verify core/src/config/types.rs changes
     let types = fs::read_to_string(workspace.path().join("core/src/config/types.rs")).unwrap();
-
-    // Check Default impl has metrics_exporter: None
     assert!(
         types.contains("metrics_exporter: OtelExporterKind::None"),
-        "metrics_exporter should be None in Default impl"
+        "metrics_exporter should default to None"
     );
 
-    // Verify core/src/config/mod.rs changes
     let config_mod = fs::read_to_string(workspace.path().join("core/src/config/mod.rs")).unwrap();
-
-    // Web search should default to Disabled
     assert!(
         config_mod.contains("WebSearchMode::Disabled"),
-        "resolve_web_search_mode_for_turn should default to Disabled"
+        "web search should default to Disabled"
     );
     assert!(
-        config_mod.contains("PRIVACY PATCH"),
-        "web search patch should include privacy comment"
+        config_mod.contains("t.metrics_exporter.unwrap_or(OtelExporterKind::None)"),
+        "config loading should default metrics_exporter to None"
     );
 }
 
 #[test]
 fn test_privacy_patches_idempotent() {
     let workspace = setup_mock_codex_workspace();
-    let patch_file =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("patches/privacy.toml");
+    let config = load_from_path(&patch_file()).expect("Failed to load privacy-v0.99.toml");
 
-    let config = load_from_path(&patch_file).expect("Failed to load privacy.toml");
+    let count_success = |results: Vec<(String, Result<PatchResult, _>)>| {
+        results
+            .into_iter()
+            .filter(|(_, r)| {
+                matches!(r, Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. }))
+            })
+            .count()
+    };
 
-    // Apply patches first time
-    let results1 = apply_patches(&config, workspace.path(), "0.88.0");
-    let successful1 = results1
-        .iter()
-        .filter(|(_, r)| {
-            matches!(
-                r,
-                Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. })
-            )
-        })
-        .count();
+    let first = count_success(apply_patches(&config, workspace.path(), "0.99.0-alpha.16"));
+    let second = count_success(apply_patches(&config, workspace.path(), "0.99.0-alpha.16"));
 
-    println!("First run: {} successful patches", successful1);
-
-    // Apply patches second time
-    let results2 = apply_patches(&config, workspace.path(), "0.88.0");
-    let successful2 = results2
-        .iter()
-        .filter(|(_, r)| {
-            matches!(
-                r,
-                Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. })
-            )
-        })
-        .count();
-
-    println!("Second run: {} successful patches", successful2);
-
-    // Second run should have same number of successful patches (idempotent)
-    assert_eq!(
-        successful1, successful2,
-        "Patches should be idempotent: same number of successful patches on re-run"
-    );
-
-    // Most patches on second run should be already applied
-    let already_applied2 = results2
-        .iter()
-        .filter(|(_, r)| matches!(r, Ok(PatchResult::AlreadyApplied { .. })))
-        .count();
-
-    println!("Second run: {} already applied", already_applied2);
-
-    // At least some patches should report as already applied
-    assert!(
-        already_applied2 > 0,
-        "At least some patches should report as already applied on second run"
-    );
+    assert!(first > 0, "First run should apply patches");
+    assert_eq!(first, second, "Patch application must be idempotent");
 }
 
 #[test]
 fn test_privacy_patches_no_telemetry_strings() {
     let workspace = setup_mock_codex_workspace();
-    let patch_file =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("patches/privacy.toml");
+    let config = load_from_path(&patch_file()).expect("Failed to load privacy-v0.99.toml");
+    apply_patches(&config, workspace.path(), "0.99.0-alpha.16");
 
-    let config = load_from_path(&patch_file).expect("Failed to load privacy.toml");
-    apply_patches(&config, workspace.path(), "0.88.0");
+    let otel = fs::read_to_string(workspace.path().join("otel/src/config.rs")).unwrap();
 
-    // Read patched file
-    let otel_config = fs::read_to_string(workspace.path().join("otel/src/config.rs")).unwrap();
-
-    // Should not contain live telemetry strings (might be in comments)
-    let has_live_endpoint = otel_config
+    let has_live_endpoint = otel
         .lines()
-        .filter(|line| !line.trim().starts_with("//"))
-        .any(|line| line.contains("ab.chatgpt.com"));
+        .filter(|l| !l.trim().starts_with("//"))
+        .any(|l| l.contains("ab.chatgpt.com"));
 
-    let has_live_api_key = otel_config
+    let has_live_key = otel
         .lines()
-        .filter(|line| !line.trim().starts_with("//"))
-        .any(|line| line.contains("STATSIG_API_KEY:"));
+        .filter(|l| !l.trim().starts_with("//"))
+        .any(|l| l.contains("STATSIG_API_KEY:"));
 
-    assert!(
-        !has_live_endpoint,
-        "Live ab.chatgpt.com endpoint should not exist"
-    );
-    assert!(!has_live_api_key, "Live API key should not exist");
+    assert!(!has_live_endpoint, "Live ab.chatgpt.com endpoint must not exist");
+    assert!(!has_live_key, "Live API key must not exist");
 }

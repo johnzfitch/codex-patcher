@@ -10,18 +10,18 @@ use std::fs;
 use std::process::Command;
 use tempfile::TempDir;
 
-/// Create a minimal mock workspace for e2e testing
+/// Create a minimal mock workspace for e2e testing (alpha.14+ code layout)
 fn setup_e2e_workspace() -> TempDir {
     let dir = TempDir::new().unwrap();
 
-    // Create directory structure
     fs::create_dir_all(dir.path().join("otel/src")).unwrap();
     fs::create_dir_all(dir.path().join("core/src/config")).unwrap();
     fs::create_dir_all(dir.path().join("core/src/rollout")).unwrap();
+    fs::create_dir_all(dir.path().join("core/src/tools")).unwrap();
     fs::create_dir_all(dir.path().join("state/src")).unwrap();
     fs::create_dir_all(dir.path().join("patches")).unwrap();
 
-    // Create Cargo.toml for workspace
+    // Cargo.toml — version must satisfy privacy-v0.99.toml range (>=0.99.0-alpha.14)
     fs::write(
         dir.path().join("Cargo.toml"),
         r#"
@@ -30,16 +30,17 @@ members = ["otel", "core"]
 
 [package]
 name = "test-codex"
-version = "0.88.0"
+version = "0.99.0-alpha.16"
 edition = "2021"
 "#,
     )
     .unwrap();
 
-    // Create mock otel/src/config.rs
     fs::write(
         dir.path().join("otel/src/config.rs"),
         r#"
+use std::collections::HashMap;
+
 pub(crate) const STATSIG_OTLP_HTTP_ENDPOINT: &str = "https://ab.chatgpt.com/otlp/v1/metrics";
 pub(crate) const STATSIG_API_KEY_HEADER: &str = "statsig-api-key";
 pub(crate) const STATSIG_API_KEY: &str = "client-REDACTED";
@@ -47,6 +48,7 @@ pub(crate) const STATSIG_API_KEY: &str = "client-REDACTED";
 pub enum OtelExporter {
     None,
     Statsig,
+    OtlpHttp { endpoint: String, headers: HashMap<String, String> },
 }
 
 impl Clone for OtelExporter {
@@ -54,18 +56,19 @@ impl Clone for OtelExporter {
         match self {
             OtelExporter::None => OtelExporter::None,
             OtelExporter::Statsig => OtelExporter::Statsig,
+            OtelExporter::OtlpHttp { endpoint, headers } => OtelExporter::OtlpHttp {
+                endpoint: endpoint.clone(), headers: headers.clone(),
+            },
         }
     }
 }
 
 pub(crate) fn resolve_exporter(exporter: &OtelExporter) -> OtelExporter {
     match exporter {
-        OtelExporter::Statsig => {
-            if cfg!(test) {
-                return OtelExporter::None;
-            }
-            OtelExporter::Statsig
-        }
+        OtelExporter::Statsig => OtelExporter::OtlpHttp {
+            endpoint: STATSIG_OTLP_HTTP_ENDPOINT.to_string(),
+            headers: HashMap::from([(STATSIG_API_KEY_HEADER.to_string(), STATSIG_API_KEY.to_string())]),
+        },
         _ => exporter.clone(),
     }
 }
@@ -73,22 +76,28 @@ pub(crate) fn resolve_exporter(exporter: &OtelExporter) -> OtelExporter {
     )
     .unwrap();
 
-    // Create mock core/src/config/types.rs
     fs::write(
         dir.path().join("core/src/config/types.rs"),
         r#"
-pub enum OtelExporterKind {
-    None,
-    Statsig,
-}
+pub enum OtelExporterKind { None, Statsig }
 
 pub struct OtelConfig {
+    pub log_user_prompt: bool,
+    pub environment: String,
+    pub exporter: OtelExporterKind,
+    pub trace_exporter: OtelExporterKind,
     pub metrics_exporter: OtelExporterKind,
 }
+
+const DEFAULT_OTEL_ENVIRONMENT: &str = "production";
 
 impl Default for OtelConfig {
     fn default() -> Self {
         OtelConfig {
+            log_user_prompt: false,
+            environment: DEFAULT_OTEL_ENVIRONMENT.to_owned(),
+            exporter: OtelExporterKind::None,
+            trace_exporter: OtelExporterKind::None,
             metrics_exporter: OtelExporterKind::Statsig,
         }
     }
@@ -97,7 +106,129 @@ impl Default for OtelConfig {
     )
     .unwrap();
 
-    // Create mock state/src/extract.rs (git origin URL redaction target)
+    // alpha.14+ style: unwrap_or form + Constrained<WebSearchMode>
+    // Text must match patch search strings exactly (indentation, blank lines, line breaks).
+    fs::write(
+        dir.path().join("core/src/config/mod.rs"),
+        r#"
+pub enum OtelExporterKind { None, Statsig }
+pub struct OtelConfigToml { pub metrics_exporter: Option<OtelExporterKind> }
+pub struct OtelConfig { pub metrics_exporter: OtelExporterKind }
+pub struct Config { pub otel: OtelConfig }
+
+pub fn load_config(t: OtelConfigToml) -> Config {
+                let metrics_exporter = t.metrics_exporter.unwrap_or(OtelExporterKind::Statsig);
+    Config { otel: OtelConfig { metrics_exporter } }
+}
+
+pub struct Constrained<T> { value: T }
+impl<T: Copy> Constrained<T> {
+    pub fn allow_any(v: T) -> Self { Self { value: v } }
+    pub fn value(&self) -> T { self.value }
+    pub fn can_set(&self, _: &T) -> Result<(), ()> { Ok(()) }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WebSearchMode { Disabled, Cached, Live }
+#[derive(Clone, Copy)]
+pub enum SandboxPolicy { ReadOnly, DangerFullAccess }
+
+fn resolve_web_search_mode(_cfg: &(), _profile: &(), _features: &()) -> Option<WebSearchMode> { None }
+
+pub fn default_web_search_mode(cfg: (), config_profile: (), features: ()) -> WebSearchMode {
+        let web_search_mode = resolve_web_search_mode(&cfg, &config_profile, &features)
+            .unwrap_or(WebSearchMode::Cached);
+    web_search_mode
+}
+
+pub(crate) fn resolve_web_search_mode_for_turn(
+    web_search_mode: &Constrained<WebSearchMode>,
+    sandbox_policy: &SandboxPolicy,
+) -> WebSearchMode {
+    let preferred = web_search_mode.value();
+    if matches!(sandbox_policy, SandboxPolicy::DangerFullAccess) { WebSearchMode::Live } else { preferred }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web_search_mode_for_turn_prefers_live_for_danger_full_access() {
+        let web_search_mode = Constrained::allow_any(WebSearchMode::Cached);
+        let mode =
+            resolve_web_search_mode_for_turn(&web_search_mode, &SandboxPolicy::DangerFullAccess);
+
+        assert_eq!(mode, WebSearchMode::Live);
+    }
+
+    #[test]
+    fn metrics_exporter_defaults_to_statsig_when_missing() {
+        let config = load_config(OtelConfigToml { metrics_exporter: None });
+        assert_eq!(config.otel.metrics_exporter, OtelExporterKind::Statsig);
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    // core/src/turn_metadata.rs — alpha.21+ signature (targeted by privacy-v0.99)
+    fs::write(
+        dir.path().join("core/src/turn_metadata.rs"),
+        r#"
+use std::collections::BTreeMap;
+use std::path::Path;
+use serde::Serialize;
+
+use crate::git_info::get_git_remote_urls_assume_git_repo;
+use crate::git_info::get_git_repo_root;
+use crate::git_info::get_head_commit_hash;
+
+#[derive(Serialize)]
+struct TurnMetadataBag {
+    turn_id: Option<String>,
+    workspaces: BTreeMap<String, ()>,
+    sandbox: Option<String>,
+}
+
+pub async fn build_turn_metadata_header(cwd: &Path, sandbox: Option<&str>) -> Option<String> {
+    let _ = (cwd, sandbox);
+    let _ = (get_git_repo_root, get_head_commit_hash, get_git_remote_urls_assume_git_repo);
+    None
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        dir.path().join("core/src/tools/registry.rs"),
+        r#"
+pub struct SandboxPolicy;
+pub struct Turn { pub sandbox_policy: SandboxPolicy, pub windows_sandbox_level: u8 }
+pub struct ToolInvocation { pub turn: Turn }
+pub fn sandbox_tag(_: &SandboxPolicy, _: u8) -> &'static str { "none" }
+pub fn sandbox_policy_tag(_: &SandboxPolicy) -> &'static str { "read_only" }
+
+pub fn dispatch(invocation: ToolInvocation) {
+        let metric_tags = [
+            (
+                "sandbox",
+                sandbox_tag(
+                    &invocation.turn.sandbox_policy,
+                    invocation.turn.windows_sandbox_level,
+                ),
+            ),
+            (
+                "sandbox_policy",
+                sandbox_policy_tag(&invocation.turn.sandbox_policy),
+            ),
+        ];
+    let _ = metric_tags;
+}
+"#,
+    )
+    .unwrap();
+
     fs::write(
         dir.path().join("state/src/extract.rs"),
         r#"
@@ -112,7 +243,6 @@ fn apply_meta_line(metadata: &mut ThreadMetadata, meta_line: &MetaLine) {
     )
     .unwrap();
 
-    // Create mock core/src/rollout/metadata.rs (git origin URL redaction target)
     fs::write(
         dir.path().join("core/src/rollout/metadata.rs"),
         r#"
@@ -124,33 +254,6 @@ fn build_metadata(session_meta: &SessionMeta) -> Option<ThreadMetadataBuilder> {
         builder.git_origin_url = git.repository_url.clone();
     }
     Some(builder)
-}
-"#,
-    )
-    .unwrap();
-
-    // Create mock core/src/config/mod.rs (web search default patch target)
-    fs::write(
-        dir.path().join("core/src/config/mod.rs"),
-        r#"
-use crate::SandboxPolicy;
-
-pub(crate) fn resolve_web_search_mode_for_turn(
-    explicit_mode: Option<WebSearchMode>,
-    is_azure_responses_endpoint: bool,
-    sandbox_policy: &SandboxPolicy,
-) -> WebSearchMode {
-    if let Some(mode) = explicit_mode {
-        return mode;
-    }
-    if is_azure_responses_endpoint {
-        return WebSearchMode::Disabled;
-    }
-    if matches!(sandbox_policy, SandboxPolicy::DangerFullAccess) {
-        WebSearchMode::Live
-    } else {
-        WebSearchMode::Cached
-    }
 }
 "#,
     )
@@ -168,8 +271,8 @@ fn test_e2e_workflow() {
 
     // Copy privacy patches to workspace
     let privacy_patch =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("patches/privacy.toml");
-    fs::copy(&privacy_patch, workspace_path.join("patches/privacy.toml")).unwrap();
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("patches/privacy-v0.99.toml");
+    fs::copy(&privacy_patch, workspace_path.join("patches/privacy-v0.99.toml")).unwrap();
 
     let binary =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/codex-patcher");
