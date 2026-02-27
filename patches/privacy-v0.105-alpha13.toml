@@ -1,8 +1,12 @@
 # =============================================================================
-# PRIVACY PATCHES (v0.105.0-alpha.13 through <0.106.0)
+# PRIVACY PATCHES (v0.105.0-alpha.13 and later)
 # =============================================================================
 #
-# Additional privacy hardening for codex-rs 0.105.x:
+# Privacy hardening for codex-rs 0.105.x and later.
+# No upper bound — applies to all future versions until a patch fails to match,
+# at which point a new versioned file should be added alongside this one.
+#
+# Originally written against 0.105.x:
 # - Remove realtime runtime-text mirroring of normal turn activity.
 # - Disable turn metadata transport over HTTP and websocket payload metadata.
 # - Convert turn metadata internals to no-op behavior.
@@ -21,8 +25,8 @@
 
 [meta]
 name = "privacy-patches-v0.105-alpha13"
-description = "Privacy hardening for 0.105.x: disable realtime mirroring/metadata/analytics/realtime overrides, force non-login shell, disable selected env overrides, enforce loopback-only OAuth callbacks, and remove external logos query"
-version_range = ">=0.105.0-alpha.13, <0.106.0"
+description = "Privacy hardening for 0.105.0-alpha.13+: disable realtime mirroring/metadata/analytics, force non-login shell, disable selected env overrides, enforce loopback-only OAuth callbacks, and remove external logos query"
+version_range = ">=0.105.0-alpha.13"
 workspace_relative = true
 
 # =============================================================================
