@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use codex_patcher::config::{apply_patches, load_from_path, ApplicationError, PatchResult};
+use codex_patcher::config::{
+    apply_patches, check_patches, load_from_path, ApplicationError, PatchResult,
+};
 use colored::Colorize;
 use similar::{ChangeTag, TextDiff};
 use std::collections::HashMap;
@@ -84,9 +86,7 @@ fn main() -> Result<()> {
 /// 2. `./patches` relative to the current working directory (typical when
 ///    running from the codex-patcher repo).
 fn discover_patch_files(workspace: &Path) -> Result<Vec<PathBuf>> {
-    let cwd_patches_dir = env::current_dir()
-        .ok()
-        .map(|cwd| cwd.join("patches"));
+    let cwd_patches_dir = env::current_dir().ok().map(|cwd| cwd.join("patches"));
     let workspace_patches_dir = workspace.join("patches");
 
     let candidate_dirs: Vec<PathBuf> = std::iter::once(workspace_patches_dir.clone())
@@ -152,7 +152,10 @@ fn resolve_workspace(cli_workspace: Option<PathBuf>) -> Result<PathBuf> {
 
     // 3. Auto-detect from current directory
     if let Some(path) = auto_detect_workspace() {
-        println!("{}", format!("Auto-detected workspace: {}", path.display()).dimmed());
+        println!(
+            "{}",
+            format!("Auto-detected workspace: {}", path.display()).dimmed()
+        );
         return Ok(path);
     }
 
@@ -206,10 +209,7 @@ fn auto_detect_workspace() -> Option<PathBuf> {
 /// (second whitespace-delimited token) and checking for the openai/codex
 /// repo path. Handles both HTTPS and SSH URL formats.
 fn find_codex_via_git() -> Option<PathBuf> {
-    let output = Command::new("git")
-        .args(["remote", "-v"])
-        .output()
-        .ok()?;
+    let output = Command::new("git").args(["remote", "-v"]).output().ok()?;
 
     if !output.status.success() {
         return None;
@@ -223,9 +223,7 @@ fn find_codex_via_git() -> Option<PathBuf> {
         let url = line.split_whitespace().nth(1).unwrap_or("");
         // HTTPS: github.com/openai/codex or github.com/openai/codex.git
         // SSH:   github.com:openai/codex or github.com:openai/codex.git
-        let normalized = url
-            .trim_end_matches(".git")
-            .trim_end_matches('/');
+        let normalized = url.trim_end_matches(".git").trim_end_matches('/');
         normalized.ends_with("github.com/openai/codex")
             || normalized.ends_with("github.com:openai/codex")
     });
@@ -314,7 +312,10 @@ fn read_workspace_version(workspace: &Path) -> Result<String> {
 
 /// Helper: Show unified diff between original and modified content
 fn display_diff(file: &Path, original: &str, modified: &str) {
-    println!("\n{}", format!("--- {} (original)", file.display()).dimmed());
+    println!(
+        "\n{}",
+        format!("--- {} (original)", file.display()).dimmed()
+    );
     println!("{}", format!("+++ {} (patched)", file.display()).dimmed());
 
     let diff = TextDiff::from_lines(original, modified);
@@ -346,11 +347,13 @@ fn cmd_apply(
     };
 
     // 3. Determine workspace version
-    let workspace_version = read_workspace_version(&workspace)
-        .unwrap_or_else(|_| {
-            eprintln!("{}", "Warning: Could not read workspace version from Cargo.toml, using 0.0.0".yellow());
-            "0.0.0".to_string()
-        });
+    let workspace_version = read_workspace_version(&workspace).unwrap_or_else(|_| {
+        eprintln!(
+            "{}",
+            "Warning: Could not read workspace version from Cargo.toml, using 0.0.0".yellow()
+        );
+        "0.0.0".to_string()
+    });
 
     println!("Workspace: {}", workspace.display());
     println!("Version: {}", workspace_version);
@@ -400,7 +403,10 @@ fn cmd_apply(
         // Apply patches (or dry-run)
         let results = if dry_run {
             println!("{}", "  [DRY RUN - showing what would be applied]".cyan());
-            println!("{}", "  Note: Patches are idempotent, so this actually applies them to check".dimmed());
+            println!(
+                "{}",
+                "  Note: Patches are idempotent, so this actually applies them to check".dimmed()
+            );
             apply_patches(&config, &workspace, &workspace_version)
         } else {
             apply_patches(&config, &workspace, &workspace_version)
@@ -411,9 +417,19 @@ fn cmd_apply(
             match result {
                 Ok(PatchResult::Applied { ref file }) => {
                     if dry_run {
-                        println!("{} {}: Would apply to {}", "✓".green(), patch_id, file.display());
+                        println!(
+                            "{} {}: Would apply to {}",
+                            "✓".green(),
+                            patch_id,
+                            file.display()
+                        );
                     } else {
-                        println!("{} {}: Applied to {}", "✓".green(), patch_id, file.display());
+                        println!(
+                            "{} {}: Applied to {}",
+                            "✓".green(),
+                            patch_id,
+                            file.display()
+                        );
                     }
                     total_applied += 1;
 
@@ -428,7 +444,12 @@ fn cmd_apply(
                     }
                 }
                 Ok(PatchResult::AlreadyApplied { file }) => {
-                    println!("{} {}: Already applied to {}", "⊙".yellow(), patch_id, file.display());
+                    println!(
+                        "{} {}: Already applied to {}",
+                        "⊙".yellow(),
+                        patch_id,
+                        file.display()
+                    );
                     total_already_applied += 1;
                 }
                 Ok(PatchResult::SkippedVersion { reason }) => {
@@ -455,7 +476,11 @@ fn cmd_apply(
                             eprintln!("    - Code was moved to different file");
                         }
                         ApplicationError::AmbiguousMatch { file, count } => {
-                            eprintln!("  {}", format!("CONFLICT: Query matched {} locations (expected 1)", count).red());
+                            eprintln!(
+                                "  {}",
+                                format!("CONFLICT: Query matched {} locations (expected 1)", count)
+                                    .red()
+                            );
                             eprintln!("  File: {}", file.display());
                             eprintln!("  Action: Refine the query pattern to be more specific");
                         }
@@ -474,7 +499,10 @@ fn cmd_apply(
     // 6. Summary
     println!("{}", "Summary:".bold());
     println!("  {} applied", format!("{}", total_applied).green());
-    println!("  {} already applied", format!("{}", total_already_applied).yellow());
+    println!(
+        "  {} already applied",
+        format!("{}", total_already_applied).yellow()
+    );
     println!("  {} skipped", format!("{}", total_skipped).cyan());
     println!("  {} failed", format!("{}", total_failed).red());
 
@@ -493,11 +521,13 @@ fn cmd_status(workspace: Option<PathBuf>) -> Result<()> {
     let patch_files = discover_patch_files(&workspace)?;
 
     // 3. Determine workspace version
-    let workspace_version = read_workspace_version(&workspace)
-        .unwrap_or_else(|_| {
-            eprintln!("{}", "Warning: Could not read workspace version from Cargo.toml, using 0.0.0".yellow());
-            "0.0.0".to_string()
-        });
+    let workspace_version = read_workspace_version(&workspace).unwrap_or_else(|_| {
+        eprintln!(
+            "{}",
+            "Warning: Could not read workspace version from Cargo.toml, using 0.0.0".yellow()
+        );
+        "0.0.0".to_string()
+    });
 
     println!("{}", "Patch Status Report".bold());
     println!("Workspace: {}", workspace.display());
@@ -508,17 +538,15 @@ fn cmd_status(workspace: Option<PathBuf>) -> Result<()> {
     let mut not_applied = Vec::new();
     let mut skipped = Vec::new();
 
-    // 4. Check status of all patches
-    // Note: We use apply_patches which is idempotent - it checks if patches
-    // are already applied before applying them
+    // 4. Check status of all patches (read-only; does not mutate workspace files)
     for patch_file in patch_files {
         let config = load_from_path(&patch_file)?;
-        let results = apply_patches(&config, &workspace, &workspace_version);
+        let results = check_patches(&config, &workspace, &workspace_version);
 
         for (patch_id, result) in results {
             match result {
                 Ok(PatchResult::Applied { .. }) => {
-                    // Patch was not applied, but we just applied it
+                    // Patch target exists and would be changed if applied.
                     not_applied.push((patch_id, "target found but was not applied".to_string()));
                 }
                 Ok(PatchResult::AlreadyApplied { .. }) => {
@@ -539,7 +567,12 @@ fn cmd_status(workspace: Option<PathBuf>) -> Result<()> {
 
     // 5. Report grouped by status
     if !applied.is_empty() {
-        println!("{} {} ({} patches)", "✓".green(), "APPLIED".green().bold(), applied.len());
+        println!(
+            "{} {} ({} patches)",
+            "✓".green(),
+            "APPLIED".green().bold(),
+            applied.len()
+        );
         for id in &applied {
             println!("  - {}", id);
         }
@@ -547,7 +580,12 @@ fn cmd_status(workspace: Option<PathBuf>) -> Result<()> {
     }
 
     if !not_applied.is_empty() {
-        println!("{} {} ({} patches)", "⊙".yellow(), "NOT APPLIED".yellow().bold(), not_applied.len());
+        println!(
+            "{} {} ({} patches)",
+            "⊙".yellow(),
+            "NOT APPLIED".yellow().bold(),
+            not_applied.len()
+        );
         for (id, reason) in &not_applied {
             println!("  - {} ({})", id, reason.dimmed());
         }
@@ -555,7 +593,12 @@ fn cmd_status(workspace: Option<PathBuf>) -> Result<()> {
     }
 
     if !skipped.is_empty() {
-        println!("{} {} ({} patches)", "⊘".cyan(), "SKIPPED".cyan().bold(), skipped.len());
+        println!(
+            "{} {} ({} patches)",
+            "⊘".cyan(),
+            "SKIPPED".cyan().bold(),
+            skipped.len()
+        );
         for (id, reason) in &skipped {
             println!("  - {} ({})", id, reason.dimmed());
         }
@@ -573,11 +616,13 @@ fn cmd_verify(workspace: Option<PathBuf>) -> Result<()> {
     let patch_files = discover_patch_files(&workspace)?;
 
     // 3. Determine workspace version
-    let workspace_version = read_workspace_version(&workspace)
-        .unwrap_or_else(|_| {
-            eprintln!("{}", "Warning: Could not read workspace version from Cargo.toml, using 0.0.0".yellow());
-            "0.0.0".to_string()
-        });
+    let workspace_version = read_workspace_version(&workspace).unwrap_or_else(|_| {
+        eprintln!(
+            "{}",
+            "Warning: Could not read workspace version from Cargo.toml, using 0.0.0".yellow()
+        );
+        "0.0.0".to_string()
+    });
 
     println!("{}", "Verifying patches...".bold());
     println!("Workspace: {}", workspace.display());
@@ -591,7 +636,7 @@ fn cmd_verify(workspace: Option<PathBuf>) -> Result<()> {
     // 4. Check verification for all patches
     for patch_file in patch_files {
         let config = load_from_path(&patch_file)?;
-        let results = apply_patches(&config, &workspace, &workspace_version);
+        let results = check_patches(&config, &workspace, &workspace_version);
 
         for (patch_id, result) in results {
             match result {
@@ -611,7 +656,10 @@ fn cmd_verify(workspace: Option<PathBuf>) -> Result<()> {
                     println!("{} {}: Skipped ({})", "⊘".cyan(), patch_id, reason);
                     skipped += 1;
                 }
-                Ok(PatchResult::Failed { ref file, ref reason }) => {
+                Ok(PatchResult::Failed {
+                    ref file,
+                    ref reason,
+                }) => {
                     eprintln!("{} {}: MISMATCH", "✗".red(), patch_id);
                     eprintln!("  Error: {}", reason);
                     eprintln!("  Location: {}", file.display());

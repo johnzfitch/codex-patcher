@@ -57,7 +57,10 @@ pub enum ApplicationError {
     /// Version filtering error
     Version(VersionError),
     /// File I/O error
-    Io { path: PathBuf, source: std::io::Error },
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     /// Edit application error
     Edit(EditError),
     /// Query matched multiple locations (ambiguous)
@@ -139,12 +142,7 @@ pub fn apply_patches(
             apply_patches_batched(config, workspace_root, workspace_version)
         }
         Ok(false) => {
-            let req = config
-                .meta
-                .version_range
-                .as_deref()
-                .unwrap_or("")
-                .trim();
+            let req = config.meta.version_range.as_deref().unwrap_or("").trim();
             let reason = if req.is_empty() {
                 format!("workspace version {workspace_version} does not satisfy patch version constraints")
             } else {
@@ -173,6 +171,231 @@ pub fn apply_patches(
     }
 }
 
+/// Check patch status without mutating the workspace.
+///
+/// This mirrors `apply_patches` result semantics (`Applied` means "would apply"),
+/// while running all edit operations against temporary files.
+pub fn check_patches(
+    config: &PatchConfig,
+    workspace_root: &Path,
+    workspace_version: &str,
+) -> Vec<(String, Result<PatchResult, ApplicationError>)> {
+    match matches_requirement(workspace_version, config.meta.version_range.as_deref()) {
+        Ok(true) => check_patches_batched(config, workspace_root),
+        Ok(false) => {
+            let req = config.meta.version_range.as_deref().unwrap_or("").trim();
+            let reason = if req.is_empty() {
+                format!("workspace version {workspace_version} does not satisfy patch version constraints")
+            } else {
+                format!(
+                    "workspace version {workspace_version} does not satisfy version_range {req}"
+                )
+            };
+            config
+                .patches
+                .iter()
+                .map(|patch| {
+                    (
+                        patch.id.clone(),
+                        Ok(PatchResult::SkippedVersion {
+                            reason: reason.clone(),
+                        }),
+                    )
+                })
+                .collect()
+        }
+        Err(e) => config
+            .patches
+            .iter()
+            .map(|patch| (patch.id.clone(), Err(ApplicationError::Version(e.clone()))))
+            .collect(),
+    }
+}
+
+/// Read-only status evaluation that groups patches by file.
+fn check_patches_batched(
+    config: &PatchConfig,
+    workspace_root: &Path,
+) -> Vec<(String, Result<PatchResult, ApplicationError>)> {
+    use std::collections::HashMap;
+
+    let mut patches_by_file: HashMap<PathBuf, Vec<&PatchDefinition>> = HashMap::new();
+
+    for patch in &config.patches {
+        let file_path = if config.meta.workspace_relative {
+            workspace_root.join(&patch.file)
+        } else {
+            PathBuf::from(&patch.file)
+        };
+        patches_by_file.entry(file_path).or_default().push(patch);
+    }
+
+    let mut all_results = Vec::new();
+
+    for (file_path, patches) in patches_by_file {
+        if !file_path.exists() {
+            for patch in patches {
+                all_results.push((
+                    patch.id.clone(),
+                    Err(ApplicationError::NoMatch {
+                        file: file_path.clone(),
+                    }),
+                ));
+            }
+            continue;
+        }
+
+        let content = match fs::read_to_string(&file_path) {
+            Ok(c) => c,
+            Err(source) => {
+                let kind = source.kind();
+                let msg = source.to_string();
+                for patch in patches {
+                    all_results.push((
+                        patch.id.clone(),
+                        Err(ApplicationError::Io {
+                            path: file_path.clone(),
+                            source: std::io::Error::new(kind, msg.clone()),
+                        }),
+                    ));
+                }
+                continue;
+            }
+        };
+
+        let mut edits_with_ids = Vec::new();
+        let mut immediate_results = Vec::new();
+
+        for patch in patches {
+            match &patch.query {
+                Query::Toml { .. } => {
+                    immediate_results.push((
+                        patch.id.clone(),
+                        check_toml_patch(patch, &file_path, &content),
+                    ));
+                }
+                _ => match compute_edit_for_patch(patch, &file_path, &content) {
+                    Ok(edit) => edits_with_ids.push((patch.id.clone(), edit)),
+                    Err(e) => immediate_results.push((patch.id.clone(), Err(e))),
+                },
+            }
+        }
+
+        if !edits_with_ids.is_empty() {
+            match simulate_batch_edits(&file_path, &content, &edits_with_ids) {
+                Ok(results) => all_results.extend(results),
+                Err(err) => {
+                    let reason = format!("Batch edit simulation failed: {}", err);
+                    for (patch_id, _) in &edits_with_ids {
+                        all_results.push((
+                            patch_id.clone(),
+                            Err(ApplicationError::TomlOperation {
+                                file: file_path.clone(),
+                                reason: reason.clone(),
+                            }),
+                        ));
+                    }
+                }
+            }
+        }
+
+        all_results.extend(immediate_results);
+    }
+
+    all_results
+}
+
+/// Simulate a batch of edits against a temporary file, preserving result semantics.
+fn simulate_batch_edits(
+    file_path: &Path,
+    content: &str,
+    edits_with_ids: &[(String, Edit)],
+) -> Result<Vec<(String, Result<PatchResult, ApplicationError>)>, EditError> {
+    let temp_dir = tempfile::tempdir().map_err(EditError::Io)?;
+    let temp_file = temp_dir.path().join("patch-check.tmp");
+    fs::write(&temp_file, content).map_err(EditError::Io)?;
+
+    let simulated_edits: Vec<Edit> = edits_with_ids
+        .iter()
+        .map(|(_, edit)| {
+            let mut simulated = edit.clone();
+            simulated.file = temp_file.clone();
+            simulated
+        })
+        .collect();
+
+    let results = Edit::apply_batch(simulated_edits)?;
+
+    Ok(edits_with_ids
+        .iter()
+        .zip(results.iter())
+        .map(|((patch_id, _), result)| {
+            let patch_result = match result {
+                EditResult::Applied { .. } => Ok(PatchResult::Applied {
+                    file: file_path.to_path_buf(),
+                }),
+                EditResult::AlreadyApplied { .. } => Ok(PatchResult::AlreadyApplied {
+                    file: file_path.to_path_buf(),
+                }),
+            };
+            (patch_id.clone(), patch_result)
+        })
+        .collect())
+}
+
+/// Evaluate a TOML patch in read-only mode by applying it to a temporary file.
+fn check_toml_patch(
+    patch: &PatchDefinition,
+    file_path: &Path,
+    content: &str,
+) -> Result<PatchResult, ApplicationError> {
+    let temp_dir = tempfile::tempdir().map_err(|source| ApplicationError::Io {
+        path: file_path.to_path_buf(),
+        source,
+    })?;
+    let temp_file = temp_dir.path().join("patch-check.toml");
+    fs::write(&temp_file, content).map_err(|source| ApplicationError::Io {
+        path: file_path.to_path_buf(),
+        source,
+    })?;
+
+    match apply_toml_patch(patch, &temp_file, content) {
+        Ok(PatchResult::Applied { .. }) => Ok(PatchResult::Applied {
+            file: file_path.to_path_buf(),
+        }),
+        Ok(PatchResult::AlreadyApplied { .. }) => Ok(PatchResult::AlreadyApplied {
+            file: file_path.to_path_buf(),
+        }),
+        Ok(PatchResult::SkippedVersion { reason }) => Ok(PatchResult::SkippedVersion { reason }),
+        Ok(PatchResult::Failed { reason, .. }) => Ok(PatchResult::Failed {
+            file: file_path.to_path_buf(),
+            reason,
+        }),
+        Err(err) => Err(remap_error_path(err, file_path)),
+    }
+}
+
+fn remap_error_path(err: ApplicationError, file_path: &Path) -> ApplicationError {
+    match err {
+        ApplicationError::Io { source, .. } => ApplicationError::Io {
+            path: file_path.to_path_buf(),
+            source,
+        },
+        ApplicationError::AmbiguousMatch { count, .. } => ApplicationError::AmbiguousMatch {
+            file: file_path.to_path_buf(),
+            count,
+        },
+        ApplicationError::NoMatch { .. } => ApplicationError::NoMatch {
+            file: file_path.to_path_buf(),
+        },
+        ApplicationError::TomlOperation { reason, .. } => ApplicationError::TomlOperation {
+            file: file_path.to_path_buf(),
+            reason,
+        },
+        other => other,
+    }
+}
+
 /// Optimized batch application that groups patches by file.
 ///
 /// Provides 4-10x speedup when multiple patches target the same file by:
@@ -182,7 +405,7 @@ pub fn apply_patches(
 fn apply_patches_batched(
     config: &PatchConfig,
     workspace_root: &Path,
-    _workspace_version: &str,
+    workspace_version: &str,
 ) -> Vec<(String, Result<PatchResult, ApplicationError>)> {
     use std::collections::HashMap;
 
@@ -202,6 +425,27 @@ fn apply_patches_batched(
 
     // Process each file once
     for (file_path, patches) in patches_by_file {
+        // TOML patches cannot currently participate in Edit::apply_batch without
+        // producing false mismatch errors in verify/status. Fall back to the
+        // legacy sequential path for any file that includes TOML patches.
+        if patches
+            .iter()
+            .any(|patch| matches!(&patch.query, Query::Toml { .. }))
+        {
+            for patch in patches {
+                all_results.push((
+                    patch.id.clone(),
+                    apply_patch(
+                        patch,
+                        workspace_root,
+                        workspace_version,
+                        &config.meta.workspace_relative,
+                    ),
+                ));
+            }
+            continue;
+        }
+
         // Check if file exists
         if !file_path.exists() {
             for patch in patches {
@@ -300,15 +544,10 @@ fn compute_edit_for_patch(
         Query::TreeSitter { pattern } => {
             compute_structural_edit(patch, file_path, content, pattern, false)
         }
-        Query::Toml { .. } => {
-            // TOML patches use a different mechanism - apply immediately for now
-            // TODO: Refactor TOML operations to use Edit::apply_batch
-            let _result = apply_toml_patch(patch, file_path, content)?;
-            Err(ApplicationError::TomlOperation {
-                file: file_path.to_path_buf(),
-                reason: "TOML patches not yet batched (applied immediately)".to_string(),
-            })
-        }
+        Query::Toml { .. } => Err(ApplicationError::TomlOperation {
+            file: file_path.to_path_buf(),
+            reason: "internal error: TOML patch reached batched edit computation".to_string(),
+        }),
     }
 }
 
@@ -371,7 +610,13 @@ fn compute_text_edit(
                 // Return a no-op edit for idempotency
                 let byte_start = 0;
                 let byte_end = 0;
-                return Ok(Edit::new(file_path, byte_start, byte_end, String::new(), ""));
+                return Ok(Edit::new(
+                    file_path,
+                    byte_start,
+                    byte_end,
+                    String::new(),
+                    "",
+                ));
             }
         }
         return Err(ApplicationError::NoMatch {
@@ -394,7 +639,13 @@ fn compute_text_edit(
         Operation::Replace { text } => {
             let byte_start = first.expect("existence checked above").0;
             let byte_end = byte_start + search.len();
-            Ok(Edit::new(file_path, byte_start, byte_end, text.clone(), search))
+            Ok(Edit::new(
+                file_path,
+                byte_start,
+                byte_end,
+                text.clone(),
+                search,
+            ))
         }
         _ => Err(ApplicationError::TomlOperation {
             file: file_path.to_path_buf(),
@@ -458,6 +709,18 @@ fn compute_structural_edit(
 
     // Special handling for Delete operations
     if matches.is_empty() {
+        // Structural replace patches can still be already applied if the target
+        // shape changed but the replacement text is present in the file.
+        if let Operation::Replace { text } = &patch.operation {
+            let replacement = text.as_str();
+            let replacement_without_trailing_newline = replacement.trim_end_matches('\n');
+            if content.contains(replacement)
+                || content.contains(replacement_without_trailing_newline)
+            {
+                return Ok(Edit::new(file_path, 0, 0, String::new(), ""));
+            }
+        }
+
         // For Delete operations, check if the deletion was already applied
         if let Operation::Delete { insert_comment } = &patch.operation {
             if let Some(comment) = insert_comment {
@@ -493,10 +756,12 @@ fn compute_structural_edit(
             }
             crate::config::schema::Verify::Hash { expected, .. } => {
                 // Parse hex string to u64
-                let hash = u64::from_str_radix(expected.trim_start_matches("0x"), 16)
-                    .map_err(|_| ApplicationError::TomlOperation {
-                        file: file_path.to_path_buf(),
-                        reason: format!("invalid hash value: {}", expected),
+                let hash =
+                    u64::from_str_radix(expected.trim_start_matches("0x"), 16).map_err(|_| {
+                        ApplicationError::TomlOperation {
+                            file: file_path.to_path_buf(),
+                            reason: format!("invalid hash value: {}", expected),
+                        }
                     })?;
                 EditVerification::Hash(hash)
             }
@@ -544,10 +809,11 @@ fn apply_toml_patch(
     file_path: &Path,
     content: &str,
 ) -> Result<PatchResult, ApplicationError> {
-    let editor = TomlEditor::from_path(file_path, content).map_err(|e| ApplicationError::TomlOperation {
-        file: file_path.to_path_buf(),
-        reason: e.to_string(),
-    })?;
+    let editor =
+        TomlEditor::from_path(file_path, content).map_err(|e| ApplicationError::TomlOperation {
+            file: file_path.to_path_buf(),
+            reason: e.to_string(),
+        })?;
 
     // Check idempotency based on operation type
     match &patch.operation {
@@ -600,22 +866,23 @@ fn apply_toml_patch(
                         reason: format!("Invalid section path: {}", e),
                     })?
                 };
-                let key_path = KeyPath::parse(key_val).map_err(|e| ApplicationError::TomlOperation {
-                    file: file_path.to_path_buf(),
-                    reason: format!("Invalid key path: {}", e),
-                })?;
+                let key_path =
+                    KeyPath::parse(key_val).map_err(|e| ApplicationError::TomlOperation {
+                        file: file_path.to_path_buf(),
+                        reason: format!("Invalid key path: {}", e),
+                    })?;
                 TomlQuery::Key {
                     section: section_path,
                     key: key_path,
                 }
             } else if let Some(section_val) = section {
-                let section_path = SectionPath::parse(section_val).map_err(|e| ApplicationError::TomlOperation {
-                    file: file_path.to_path_buf(),
-                    reason: format!("Invalid section path: {}", e),
+                let section_path = SectionPath::parse(section_val).map_err(|e| {
+                    ApplicationError::TomlOperation {
+                        file: file_path.to_path_buf(),
+                        reason: format!("Invalid section path: {}", e),
+                    }
                 })?;
-                TomlQuery::Section {
-                    path: section_path,
-                }
+                TomlQuery::Section { path: section_path }
             } else {
                 return Err(ApplicationError::TomlOperation {
                     file: file_path.to_path_buf(),
@@ -635,9 +902,11 @@ fn apply_toml_patch(
     let toml_operation = match &patch.operation {
         Operation::InsertSection { text, positioning } => TomlOperation::InsertSection {
             text: text.clone(),
-            positioning: convert_positioning(positioning).map_err(|e| ApplicationError::TomlOperation {
-                file: file_path.to_path_buf(),
-                reason: format!("Invalid positioning: {}", e),
+            positioning: convert_positioning(positioning).map_err(|e| {
+                ApplicationError::TomlOperation {
+                    file: file_path.to_path_buf(),
+                    reason: format!("Invalid positioning: {}", e),
+                }
             })?,
         },
         Operation::AppendSection { text } => TomlOperation::AppendSection { text: text.clone() },
@@ -684,9 +953,7 @@ fn apply_toml_patch(
 }
 
 /// Convert config::Positioning to toml::Positioning
-fn convert_positioning(
-    pos: &Positioning,
-) -> Result<crate::toml::Positioning, String> {
+fn convert_positioning(pos: &Positioning) -> Result<crate::toml::Positioning, String> {
     use crate::toml::Positioning as TP;
 
     // Count how many positioning options are specified
@@ -709,12 +976,12 @@ fn convert_positioning(
     }
 
     if let Some(after) = &pos.after_section {
-        let path = SectionPath::parse(after)
-            .map_err(|e| format!("Invalid after_section: {}", e))?;
+        let path =
+            SectionPath::parse(after).map_err(|e| format!("Invalid after_section: {}", e))?;
         Ok(TP::AfterSection(path))
     } else if let Some(before) = &pos.before_section {
-        let path = SectionPath::parse(before)
-            .map_err(|e| format!("Invalid before_section: {}", e))?;
+        let path =
+            SectionPath::parse(before).map_err(|e| format!("Invalid before_section: {}", e))?;
         Ok(TP::BeforeSection(path))
     } else if pos.at_end {
         Ok(TP::AtEnd)
@@ -797,10 +1064,12 @@ fn apply_structural_patch(
             }
             crate::config::schema::Verify::Hash { expected, .. } => {
                 // Parse hex string to u64
-                let hash = u64::from_str_radix(expected.trim_start_matches("0x"), 16)
-                    .map_err(|_| ApplicationError::TomlOperation {
-                        file: file_path.to_path_buf(),
-                        reason: format!("invalid hash value: {}", expected),
+                let hash =
+                    u64::from_str_radix(expected.trim_start_matches("0x"), 16).map_err(|_| {
+                        ApplicationError::TomlOperation {
+                            file: file_path.to_path_buf(),
+                            reason: format!("invalid hash value: {}", expected),
+                        }
                     })?;
                 EditVerification::Hash(hash)
             }
@@ -874,12 +1143,12 @@ fn find_tree_sitter_matches(content: &str, pattern: &str) -> Result<Vec<(usize, 
             .ok_or_else(|| "cannot extract function name from pattern".to_string())?;
 
         let span = pooled::locate(
-                content,
-                &StructuralTarget::Function {
-                    name: fn_name.to_string(),
-                },
-            )
-            .map_err(|e| format!("locator error: {}", e))?;
+            content,
+            &StructuralTarget::Function {
+                name: fn_name.to_string(),
+            },
+        )
+        .map_err(|e| format!("locator error: {}", e))?;
 
         Ok(vec![(span.byte_start, span.byte_end)])
     } else {

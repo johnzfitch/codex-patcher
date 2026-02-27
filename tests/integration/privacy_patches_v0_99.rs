@@ -519,9 +519,10 @@ fn test_privacy_patches_v0_99_alpha12_apply() {
 
     let results = apply_patches(&config, workspace.path(), "0.99.0-alpha.12");
     assert!(
-        results
-            .iter()
-            .any(|(_, r)| matches!(r, Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. }))),
+        results.iter().any(|(_, r)| matches!(
+            r,
+            Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. })
+        )),
         "Expected at least one patch to apply for alpha.12"
     );
 
@@ -565,9 +566,10 @@ fn test_privacy_patches_v0_99_alpha16_apply() {
 
     let results = apply_patches(&config, workspace.path(), "0.99.0-alpha.16");
     assert!(
-        results
-            .iter()
-            .any(|(_, r)| matches!(r, Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. }))),
+        results.iter().any(|(_, r)| matches!(
+            r,
+            Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. })
+        )),
         "Expected at least one patch to apply for alpha.16"
     );
 
@@ -600,9 +602,10 @@ fn test_privacy_patches_v0_99_alpha23_apply() {
 
     let results = apply_patches(&config, workspace.path(), "0.99.0-alpha.23");
     assert!(
-        results
-            .iter()
-            .any(|(_, r)| matches!(r, Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. }))),
+        results.iter().any(|(_, r)| matches!(
+            r,
+            Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. })
+        )),
         "Expected at least one patch to apply for alpha.23"
     );
 

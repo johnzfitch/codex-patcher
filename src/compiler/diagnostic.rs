@@ -173,7 +173,11 @@ impl SourceSpan {
 }
 
 /// Recursively collect suggestions from child diagnostics.
-fn collect_suggestions(children: &[CargoDiagnostic], workspace_root: &Path, out: &mut Vec<Suggestion>) {
+fn collect_suggestions(
+    children: &[CargoDiagnostic],
+    workspace_root: &Path,
+    out: &mut Vec<Suggestion>,
+) {
     for child in children {
         for span in &child.spans {
             if let Some(replacement) = &span.suggested_replacement {

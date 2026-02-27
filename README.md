@@ -247,6 +247,11 @@ codex-patcher/
 │   ├── edit.rs          # Core Edit primitive
 │   ├── safety.rs        # WorkspaceGuard
 │   ├── validate.rs      # Parse/syn validation
+│   ├── cache.rs         # Compilation cache
+│   ├── pool.rs          # Parser pool
+│   ├── compiler/        # Compiler integration
+│   │   ├── diagnostic.rs # Diagnostic span extraction
+│   │   └── autofix.rs   # MachineApplicable suggestion handling
 │   ├── config/          # Patch configuration
 │   │   ├── schema.rs    # Patch definition types
 │   │   ├── loader.rs    # TOML config parser
@@ -255,7 +260,8 @@ codex-patcher/
 │   ├── ts/              # Tree-sitter integration
 │   │   ├── parser.rs    # Rust parser wrapper
 │   │   ├── query.rs     # Query engine
-│   │   └── locator.rs   # Structural locators
+│   │   ├── locator.rs   # Structural locators
+│   │   └── validator.rs # Parse validation
 │   ├── sg/              # ast-grep integration
 │   │   ├── matcher.rs   # Pattern matching
 │   │   ├── replacer.rs  # Replacement operations
@@ -265,9 +271,18 @@ codex-patcher/
 │       ├── query.rs     # Section/key queries
 │       └── operations.rs # TOML operations
 ├── patches/             # Patch definitions
-│   ├── privacy.toml     # Telemetry removal
-│   ├── memory-safety-regressions.toml # Memory behavior + safety hardening for 0.101.x
-│   └── performance.toml # Build optimizations
+│   ├── privacy.toml                    # Telemetry removal (0.88–0.99)
+│   ├── privacy-v0.99-alpha1-alpha22.toml
+│   ├── privacy-v0.99-alpha14-alpha20.toml
+│   ├── privacy-v0.99-alpha23.toml
+│   ├── privacy-v0.105-alpha13.toml     # Privacy hardening (0.105.x)
+│   ├── memory-safety-regressions.toml  # Memory safety hardening
+│   ├── analytics-counters.toml         # Analytics counter removal
+│   ├── approvals-ui.toml               # Approvals UI patches
+│   ├── sandbox-metrics.toml            # Sandbox metrics removal
+│   ├── subagent-limit.toml             # Subagent limit patches
+│   ├── timing-loops.toml               # Replace polling with event-driven waits
+│   └── ...                             # Additional patches
 ├── tests/               # Integration tests
 └── docs/                # Documentation
 ```
@@ -324,7 +339,7 @@ cargo test --test integration
 | Patch Definitions | <img src=".github/assets/icons/tick.png" width="12" alt=""/> Complete |
 | Documentation | <img src=".github/assets/icons/tick.png" width="12" alt=""/> Complete |
 
-**Test Results:** 117 tests, 100% passing
+**Test Results:** 149 tests, all passing
 
 ---
 

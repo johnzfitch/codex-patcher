@@ -61,6 +61,5 @@ pub use ts::{
     TreeSitterError,
 };
 pub use validate::{
-    syn_validate, ErrorLocation, ParseValidator, SelectorValidator, ValidatedEdit,
-    ValidationError,
+    syn_validate, ErrorLocation, ParseValidator, SelectorValidator, ValidatedEdit, ValidationError,
 };

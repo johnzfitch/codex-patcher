@@ -30,7 +30,7 @@
 [meta]
 name = "privacy-patches-v0.99-alpha21-plus"
 description = "Privacy hardening for 0.99.0-alpha.21+ (disable Statsig metrics defaults + web search defaults + turn metadata headers)"
-version_range = ">=0.99.0-alpha.21"
+version_range = ">=0.99.0-alpha.21, <0.105.0-alpha.13"
 workspace_relative = true
 
 # =============================================================================
@@ -267,21 +267,18 @@ id = "privacy-v0.99-a23-drop-tool-sandbox-metric-tags"
 file = "core/src/tools/registry.rs"
 
 [patches.query]
-type = "text"
-search = '''
-        let metric_tags = [
-            (
-                "sandbox",
-                sandbox_tag(
-                    &invocation.turn.sandbox_policy,
-                    invocation.turn.windows_sandbox_level,
-                ),
-            ),
-            (
-                "sandbox_policy",
-                sandbox_policy_tag(&invocation.turn.sandbox_policy),
-            ),
-        ];
+type = "ast-grep"
+pattern = '''
+let metric_tags = [
+    (
+        "sandbox",
+        sandbox_tag($$$SANDBOX_ARGS),
+    ),
+    (
+        "sandbox_policy",
+        sandbox_policy_tag($$$POLICY_ARGS),
+    ),
+];
 '''
 
 [patches.operation]
@@ -316,7 +313,8 @@ pub async fn build_turn_metadata_header(_cwd: &Path, _sandbox: Option<&str>) -> 
     //
     // Keep references to the original helpers/types so this module remains warning-clean.
     let _ = (get_git_repo_root, get_head_commit_hash, get_git_remote_urls_assume_git_repo);
-    let _ = TurnMetadata {
+    let _ = TurnMetadataBag {
+        turn_id: None,
         workspaces: BTreeMap::new(),
         sandbox: None,
     };

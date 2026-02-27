@@ -18,7 +18,7 @@
 [meta]
 name = "sandbox-metrics"
 description = "Remove sandbox implementation and policy tags from tool call metrics"
-version_range = ">=0.99.0-alpha.2"
+version_range = ">=0.99.0-alpha.2, <0.99.0-alpha.10"
 workspace_relative = true
 
 # =============================================================================

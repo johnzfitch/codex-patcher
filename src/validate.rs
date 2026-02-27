@@ -89,11 +89,7 @@ impl ParseValidator {
     ///
     /// Returns Ok if the edited source doesn't introduce new parse errors
     /// that weren't in the original.
-    pub fn validate_edit(
-        &mut self,
-        original: &str,
-        edited: &str,
-    ) -> Result<(), ValidationError> {
+    pub fn validate_edit(&mut self, original: &str, edited: &str) -> Result<(), ValidationError> {
         let original_parsed = self.parser.parse_with_source(original)?;
         let edited_parsed = self.parser.parse_with_source(edited)?;
 
@@ -152,10 +148,7 @@ pub mod pooled {
     }
 
     /// Compare two sources and check if new errors were introduced using pooled parser.
-    pub fn validate_edit(
-        original: &str,
-        edited: &str,
-    ) -> Result<(), ValidationError> {
+    pub fn validate_edit(original: &str, edited: &str) -> Result<(), ValidationError> {
         pool::with_parser(|parser| {
             let original_parsed = parser.parse_with_source(original)?;
             let original_errors = collect_error_positions(&original_parsed);
@@ -388,13 +381,15 @@ impl ValidatedEdit {
 
             // Check verification
             if !self.edit.expected_before.matches(before) {
-                return Err(ValidationError::from(crate::edit::EditError::BeforeTextMismatch {
-                    file: self.edit.file.clone(),
-                    byte_start: self.edit.byte_start,
-                    byte_end: self.edit.byte_end,
-                    expected: format!("{:?}", self.edit.expected_before),
-                    found: before.to_string(),
-                }));
+                return Err(ValidationError::from(
+                    crate::edit::EditError::BeforeTextMismatch {
+                        file: self.edit.file.clone(),
+                        byte_start: self.edit.byte_start,
+                        byte_end: self.edit.byte_end,
+                        expected: format!("{:?}", self.edit.expected_before),
+                        found: before.to_string(),
+                    },
+                ));
             }
 
             // Simulate edit

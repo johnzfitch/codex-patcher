@@ -331,7 +331,10 @@ fn bar() {}
         let matcher = PatternMatcher::new(source);
         let result = matcher.find_unique("fn $NAME() {}");
 
-        assert!(matches!(result, Err(AstGrepError::AmbiguousMatch { count: 2 })));
+        assert!(matches!(
+            result,
+            Err(AstGrepError::AmbiguousMatch { count: 2 })
+        ));
     }
 
     #[test]
@@ -400,7 +403,9 @@ struct Bar { y: String }
         let matcher = PatternMatcher::new(source);
 
         // Find all struct items
-        let structs = matcher.find_by_kind_with_field("struct_item", None).unwrap();
+        let structs = matcher
+            .find_by_kind_with_field("struct_item", None)
+            .unwrap();
         assert_eq!(structs.len(), 2);
 
         // Find struct with specific name - use metavar to match the type_identifier

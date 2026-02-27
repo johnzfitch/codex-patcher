@@ -30,7 +30,8 @@ pub fn validate_edit(
     new_text: &str,
 ) -> Result<(), TreeSitterError> {
     // Build the new source
-    let mut new_source = String::with_capacity(source.len() + new_text.len() - (byte_end - byte_start));
+    let mut new_source =
+        String::with_capacity(source.len() + new_text.len() - (byte_end - byte_start));
     new_source.push_str(&source[..byte_start]);
     new_source.push_str(new_text);
     new_source.push_str(&source[byte_end..]);
@@ -131,7 +132,7 @@ fn main() {
     #[test]
     fn validate_edit_on_already_broken_code() {
         let source = "fn foo( { let x = 1; }"; // Already broken
-        // Make a change that doesn't add new errors
+                                               // Make a change that doesn't add new errors
         let result = validate_edit(source, 10, 20, "let y = 2;");
         assert!(result.is_ok()); // Should be ok since we didn't add NEW errors
     }

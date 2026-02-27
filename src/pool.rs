@@ -4,8 +4,8 @@
 //! of reusable parsers. Creates new parser on first use per thread, reuses
 //! for subsequent operations.
 
-use std::cell::RefCell;
 use crate::ts::{RustParser, TreeSitterError};
+use std::cell::RefCell;
 
 thread_local! {
     static RUST_PARSER: RefCell<Option<RustParser>> = RefCell::new(None);

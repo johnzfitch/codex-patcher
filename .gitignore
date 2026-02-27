@@ -17,3 +17,12 @@ Thumbs.db
 
 # Testing
 /fixtures/output/
+
+# AI session artifacts (phase notes, planning docs, handoffs)
+PHASE*.md
+HANDOFF_*.md
+PLAN_*.md
+plan.md
+PERFORMANCE_OPTIMIZATIONS.md
+SECURITY_AUDIT.md
+analysis/

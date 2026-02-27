@@ -37,8 +37,10 @@ search = '''
 '''
 
 [patches.operation]
-type = "delete"
-insert_comment = "// PRIVACY PATCH: Removed fork analytics counter (was: codex.thread.fork)"
+type = "replace"
+text = '''
+                // PRIVACY PATCH: Removed fork analytics counter (was: codex.thread.fork)
+'''
 
 # =============================================================================
 # Patch 2: Remove fork counter from slash command path
@@ -56,8 +58,10 @@ search = '''
 '''
 
 [patches.operation]
-type = "delete"
-insert_comment = "// PRIVACY PATCH: Removed fork analytics counter (was: codex.thread.fork)"
+type = "replace"
+text = '''
+                // PRIVACY PATCH: Removed fork analytics counter (was: codex.thread.fork)
+'''
 
 # =============================================================================
 # Patch 3: Remove rename counter from slash command handler

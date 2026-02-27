@@ -43,11 +43,16 @@ impl QueryEngine {
     /// Captures are prefixed with `@` and can be referenced by name.
     pub fn new(query_str: &str) -> Result<Self, TreeSitterError> {
         let language = SupportLang::Rust.get_ts_language();
-        let query = Query::new(&language, query_str).map_err(|e| TreeSitterError::InvalidQuery {
-            message: e.to_string(),
-        })?;
+        let query =
+            Query::new(&language, query_str).map_err(|e| TreeSitterError::InvalidQuery {
+                message: e.to_string(),
+            })?;
 
-        let capture_names = query.capture_names().iter().map(|s| s.to_string()).collect();
+        let capture_names = query
+            .capture_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         Ok(Self {
             query,

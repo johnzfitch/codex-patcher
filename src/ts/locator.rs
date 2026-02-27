@@ -128,7 +128,11 @@ impl StructuralLocator {
     }
 
     /// Locate a structural target in source code, expecting exactly one match.
-    pub fn locate(&mut self, source: &str, target: &StructuralTarget) -> Result<LocatorResult, TreeSitterError> {
+    pub fn locate(
+        &mut self,
+        source: &str,
+        target: &StructuralTarget,
+    ) -> Result<LocatorResult, TreeSitterError> {
         let parsed = self.parser.parse_with_source(source)?;
         let query_str = target.to_query();
         let engine = QueryEngine::new(&query_str)?;
@@ -203,7 +207,10 @@ pub mod pooled {
     use crate::pool;
 
     /// Locate a structural target using pooled parser.
-    pub fn locate(source: &str, target: &StructuralTarget) -> Result<LocatorResult, TreeSitterError> {
+    pub fn locate(
+        source: &str,
+        target: &StructuralTarget,
+    ) -> Result<LocatorResult, TreeSitterError> {
         pool::with_parser(|parser| {
             let parsed = parser.parse_with_source(source)?;
             let query_str = target.to_query();
@@ -243,25 +250,57 @@ pub mod pooled {
 
     /// Find a function by name using pooled parser.
     pub fn find_function(source: &str, name: &str) -> Result<LocatorResult, TreeSitterError> {
-        locate(source, &StructuralTarget::Function { name: name.to_string() })
+        locate(
+            source,
+            &StructuralTarget::Function {
+                name: name.to_string(),
+            },
+        )
     }
 }
 
 /// Convenience functions for common operations.
 impl StructuralLocator {
     /// Find a function by name.
-    pub fn find_function(&mut self, source: &str, name: &str) -> Result<LocatorResult, TreeSitterError> {
-        self.locate(source, &StructuralTarget::Function { name: name.to_string() })
+    pub fn find_function(
+        &mut self,
+        source: &str,
+        name: &str,
+    ) -> Result<LocatorResult, TreeSitterError> {
+        self.locate(
+            source,
+            &StructuralTarget::Function {
+                name: name.to_string(),
+            },
+        )
     }
 
     /// Find a struct by name.
-    pub fn find_struct(&mut self, source: &str, name: &str) -> Result<LocatorResult, TreeSitterError> {
-        self.locate(source, &StructuralTarget::Struct { name: name.to_string() })
+    pub fn find_struct(
+        &mut self,
+        source: &str,
+        name: &str,
+    ) -> Result<LocatorResult, TreeSitterError> {
+        self.locate(
+            source,
+            &StructuralTarget::Struct {
+                name: name.to_string(),
+            },
+        )
     }
 
     /// Find a const by name.
-    pub fn find_const(&mut self, source: &str, name: &str) -> Result<LocatorResult, TreeSitterError> {
-        self.locate(source, &StructuralTarget::Const { name: name.to_string() })
+    pub fn find_const(
+        &mut self,
+        source: &str,
+        name: &str,
+    ) -> Result<LocatorResult, TreeSitterError> {
+        self.locate(
+            source,
+            &StructuralTarget::Const {
+                name: name.to_string(),
+            },
+        )
     }
 
     /// Find all consts matching a pattern.
@@ -279,7 +318,11 @@ impl StructuralLocator {
     }
 
     /// Find an impl block for a type.
-    pub fn find_impl(&mut self, source: &str, type_name: &str) -> Result<LocatorResult, TreeSitterError> {
+    pub fn find_impl(
+        &mut self,
+        source: &str,
+        type_name: &str,
+    ) -> Result<LocatorResult, TreeSitterError> {
         self.locate(
             source,
             &StructuralTarget::Impl {

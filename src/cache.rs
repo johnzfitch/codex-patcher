@@ -4,10 +4,10 @@
 //! Provides 5-10x speedup for repetitive pattern usage.
 //! Cache is capped at 256 entries; oldest entries are evicted when full.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
 use ast_grep_core::Pattern;
 use ast_grep_language::SupportLang;
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 const MAX_CACHE_ENTRIES: usize = 256;
 
@@ -51,7 +51,5 @@ pub fn clear_cache() {
 
 /// Get cache statistics for monitoring.
 pub fn cache_size() -> usize {
-    PATTERN_CACHE.with(|cache| {
-        cache.borrow().len()
-    })
+    PATTERN_CACHE.with(|cache| cache.borrow().len())
 }

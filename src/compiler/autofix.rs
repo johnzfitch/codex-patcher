@@ -6,6 +6,7 @@
 
 use crate::compiler::diagnostic::{CompileDiagnostic, Suggestion};
 use crate::edit::Edit;
+use cargo_metadata::diagnostic::Applicability;
 use std::path::Path;
 use thiserror::Error;
 
@@ -54,11 +55,9 @@ pub fn try_autofix(diag: &CompileDiagnostic, workspace: &Path) -> AutofixResult 
     // 2. Pattern-match on error codes for custom fixes
     match diag.code.as_deref() {
         Some("E0063") => fix_missing_field(diag, workspace),
+        Some("E0433") => fix_unresolved_module(diag, workspace),
         _ => AutofixResult::CannotFix {
-            reason: format!(
-                "No auto-fix strategy for error code {:?}",
-                diag.code
-            ),
+            reason: format!("No auto-fix strategy for error code {:?}", diag.code),
         },
     }
 }
@@ -127,7 +126,9 @@ fn fix_missing_field(diag: &CompileDiagnostic, workspace: &Path) -> AutofixResul
 
     // Find the closing brace of the struct initializer
     // We'll insert our new field before it
-    let Some(insert_info) = find_struct_initializer_insert_point(&content, span.byte_start, span.byte_end) else {
+    let Some(insert_info) =
+        find_struct_initializer_insert_point(&content, span.byte_start, span.byte_end)
+    else {
         return AutofixResult::CannotFix {
             reason: "Cannot find struct initializer closing brace".to_string(),
         };
@@ -173,6 +174,70 @@ fn fix_missing_field(diag: &CompileDiagnostic, workspace: &Path) -> AutofixResul
     }
 
     AutofixResult::Fixed(vec![edit])
+}
+
+/// Fix E0433: unresolved module or crate path.
+///
+/// We accept compiler suggestions with `MachineApplicable` or `MaybeIncorrect`
+/// applicability, but only when there is exactly one safe candidate edit.
+fn fix_unresolved_module(diag: &CompileDiagnostic, workspace: &Path) -> AutofixResult {
+    let mut candidates: Vec<&Suggestion> = diag
+        .suggestions
+        .iter()
+        .filter(|suggestion| {
+            suggestion.file.starts_with(workspace)
+                && matches!(
+                    suggestion.applicability,
+                    Applicability::MachineApplicable | Applicability::MaybeIncorrect
+                )
+                && is_safe_path_replacement(&suggestion.replacement)
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        return AutofixResult::CannotFix {
+            reason: "No safe suggestion candidates for E0433".to_string(),
+        };
+    }
+
+    // Prefer machine-applicable suggestions when available.
+    let has_machine_applicable = candidates
+        .iter()
+        .any(|s| s.applicability == Applicability::MachineApplicable);
+    if has_machine_applicable {
+        candidates.retain(|s| s.applicability == Applicability::MachineApplicable);
+    }
+
+    let mut edits = Vec::new();
+    for suggestion in candidates {
+        if let Some(edit) = suggestion_to_edit(suggestion, workspace) {
+            if edits.iter().any(|existing: &Edit| {
+                existing.file == edit.file
+                    && existing.byte_start == edit.byte_start
+                    && existing.byte_end == edit.byte_end
+                    && existing.new_text == edit.new_text
+            }) {
+                continue;
+            }
+            edits.push(edit);
+        }
+    }
+
+    if edits.len() != 1 {
+        return AutofixResult::CannotFix {
+            reason: format!("Ambiguous E0433 suggestions: {} candidates", edits.len()),
+        };
+    }
+
+    AutofixResult::Fixed(edits)
+}
+
+fn is_safe_path_replacement(replacement: &str) -> bool {
+    let replacement = replacement.trim();
+    !replacement.is_empty()
+        && replacement
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
 }
 
 /// Parse E0063 error message to extract field name and struct name.
@@ -269,7 +334,8 @@ fn find_struct_initializer_insert_point(
     let needs_comma = !is_empty && last_content_char != Some(',');
 
     // Detect indentation from existing fields or closing brace
-    let (field_indent, closing_brace_indent) = detect_indentation(content, opening_brace, closing_brace);
+    let (field_indent, closing_brace_indent) =
+        detect_indentation(content, opening_brace, closing_brace);
 
     Some(InsertPoint {
         insert_at: closing_brace,
@@ -283,7 +349,11 @@ fn find_struct_initializer_insert_point(
 /// Detect the indentation used in a struct initializer.
 ///
 /// Returns (field_indent, closing_brace_indent).
-fn detect_indentation(content: &str, opening_brace: usize, closing_brace: usize) -> (String, String) {
+fn detect_indentation(
+    content: &str,
+    opening_brace: usize,
+    closing_brace: usize,
+) -> (String, String) {
     // Find the indentation of the closing brace by looking at the line it's on
     let closing_brace_indent = get_line_indent(content, closing_brace);
 
@@ -385,6 +455,9 @@ fn infer_default_value(field_name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cargo_metadata::diagnostic::{Applicability, DiagnosticLevel};
+    use std::path::PathBuf;
+    use tempfile::TempDir;
 
     #[test]
     fn test_parse_missing_field_message() {
@@ -465,5 +538,92 @@ mod tests {
         let insert = find_struct_initializer_insert_point(content, 50, 180).unwrap();
         assert_eq!(insert.field_indent, "            "); // 12 spaces
         assert_eq!(insert.closing_brace_indent, "        "); // 8 spaces
+    }
+
+    #[test]
+    fn test_fix_e0433_with_single_safe_suggestion() {
+        let workspace = TempDir::new().unwrap();
+        let file = workspace.path().join("mod.rs");
+        let source = "use codex_common::approval_presets::builtin_approval_presets;\n";
+        std::fs::write(&file, source).unwrap();
+
+        let needle = "codex_common";
+        let byte_start = source.find(needle).unwrap();
+        let byte_end = byte_start + needle.len();
+
+        let diag = CompileDiagnostic {
+            code: Some("E0433".to_string()),
+            message: "failed to resolve: use of unresolved module or unlinked crate `codex_common`"
+                .to_string(),
+            level: DiagnosticLevel::Error,
+            spans: vec![],
+            suggestions: vec![Suggestion {
+                file: PathBuf::from(&file),
+                byte_start,
+                byte_end,
+                replacement: "codex_utils_approval_presets".to_string(),
+                applicability: Applicability::MaybeIncorrect,
+                message: "there is a crate with a similar name".to_string(),
+            }],
+            rendered: None,
+        };
+
+        let result = try_autofix(&diag, workspace.path());
+        match result {
+            AutofixResult::Fixed(edits) => {
+                assert_eq!(edits.len(), 1);
+                assert_eq!(edits[0].byte_start, byte_start);
+                assert_eq!(edits[0].byte_end, byte_end);
+                assert_eq!(edits[0].new_text, "codex_utils_approval_presets");
+            }
+            AutofixResult::CannotFix { reason } => panic!("expected fix, got: {reason}"),
+        }
+    }
+
+    #[test]
+    fn test_fix_e0433_rejects_ambiguous_suggestions() {
+        let workspace = TempDir::new().unwrap();
+        let file = workspace.path().join("mod.rs");
+        let source = "use codex_common::foo;\nuse codex_common::bar;\n";
+        std::fs::write(&file, source).unwrap();
+
+        let first = source.find("codex_common").unwrap();
+        let second = source[first + 1..].find("codex_common").unwrap() + first + 1;
+        let end = first + "codex_common".len();
+        let second_end = second + "codex_common".len();
+
+        let diag = CompileDiagnostic {
+            code: Some("E0433".to_string()),
+            message: "failed to resolve".to_string(),
+            level: DiagnosticLevel::Error,
+            spans: vec![],
+            suggestions: vec![
+                Suggestion {
+                    file: PathBuf::from(&file),
+                    byte_start: first,
+                    byte_end: end,
+                    replacement: "codex_core".to_string(),
+                    applicability: Applicability::MaybeIncorrect,
+                    message: "hint".to_string(),
+                },
+                Suggestion {
+                    file: PathBuf::from(&file),
+                    byte_start: second,
+                    byte_end: second_end,
+                    replacement: "codex_utils".to_string(),
+                    applicability: Applicability::MaybeIncorrect,
+                    message: "hint".to_string(),
+                },
+            ],
+            rendered: None,
+        };
+
+        let result = try_autofix(&diag, workspace.path());
+        match result {
+            AutofixResult::CannotFix { reason } => {
+                assert!(reason.contains("Ambiguous E0433 suggestions"));
+            }
+            AutofixResult::Fixed(_) => panic!("expected ambiguous result to be rejected"),
+        }
     }
 }

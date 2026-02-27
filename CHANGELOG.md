@@ -16,22 +16,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Security policy
 - MIT and Apache-2.0 license files
 - Version-specific privacy patch sets for Codex `0.99.0-alpha` releases:
-  - `~/dev/codex-patcher/patches/privacy-v0.99-alpha1-alpha22.toml` (`>=0.99.0-alpha.10, <0.99.0-alpha.14`)
-  - `~/dev/codex-patcher/patches/privacy-v0.99-alpha14-alpha20.toml` (`>=0.99.0-alpha.14, <0.99.0-alpha.21`)
-  - `~/dev/codex-patcher/patches/privacy-v0.99-alpha23.toml` (`>=0.99.0-alpha.21`)
-- New v0.99 integration test coverage in `~/dev/codex-patcher/tests/integration/privacy_patches_v0_99.rs`.
+  - `patches/privacy-v0.99-alpha1-alpha22.toml` (`>=0.99.0-alpha.10, <0.99.0-alpha.14`)
+  - `patches/privacy-v0.99-alpha14-alpha20.toml` (`>=0.99.0-alpha.14, <0.99.0-alpha.21`)
+  - `patches/privacy-v0.99-alpha23.toml` (`>=0.99.0-alpha.21, <0.105.0-alpha.13`)
+- Version-specific privacy patch set for Codex `0.105.x` releases:
+  - `patches/privacy-v0.105-alpha13.toml` (`>=0.105.0-alpha.13, <0.106.0`)
+- `patches/timing-loops.toml`: replace polling loops with event-driven waiting (shutdown, PTY, commit animation)
+- New v0.99 integration test coverage in `tests/integration/privacy_patches_v0_99.rs`.
 
 ### Changed
-- Enforced patch-file version gating in `~/dev/codex-patcher/src/config/applicator.rs`:
+- Expanded `patches/privacy-v0.105-alpha13.toml` to additionally:
+  force non-login shell behavior, ignore `LOG_FORMAT`, ignore externally supplied zsh wrapper socket
+  paths, require full wrapper handshake env in wrapper mode, stop exporting legacy
+  `BASH_EXEC_WRAPPER`, and remove `CODEX_APP_SERVER_URL` env override in app-server test client.
+- Enforced patch-file version gating in `src/config/applicator.rs`:
   incompatible files now return `PatchResult::SkippedVersion` instead of being applied.
-- Updated legacy privacy patch range in `~/dev/codex-patcher/patches/privacy.toml` to
+- Updated legacy privacy patch range in `patches/privacy.toml` to
   `>=0.88.0, <0.99.0-alpha.7` to match upstream web-search signature changes.
-- Improved patch discovery in `~/dev/codex-patcher/src/main.rs` to prefer `<workspace>/patches`
+- Improved patch discovery in `src/main.rs` to prefer `<workspace>/patches`
   with fallback to local `./patches`.
-- Improved workspace version detection in `~/dev/codex-patcher/src/main.rs` by adding
+- Improved workspace version detection in `src/main.rs` by adding
   `Cargo.toml` parsing fallback when `cargo metadata` is unavailable.
 - Normalized structural replacement trailing-newline handling in
-  `~/dev/codex-patcher/src/config/applicator.rs` to restore idempotent `verify` behavior.
+  `src/config/applicator.rs` to restore idempotent `verify` behavior.
 
 ### Security
 - Removed embedded Statsig-like key literals from docs/tests/patch comments and replaced with

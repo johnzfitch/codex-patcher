@@ -34,7 +34,7 @@ workspace_relative = true
 
 [[patches]]
 id = "define-5-approval-presets"
-file = "common/src/approval_presets.rs"
+file = "utils/approval-presets/src/lib.rs"
 
 [patches.query]
 type = "ast-grep"
@@ -54,14 +54,14 @@ pub fn builtin_approval_presets() -> Vec<ApprovalPreset> {
             label: "Read Only",
             description: "Can read files and code. No edits, no commands.",
             approval: AskForApproval::OnRequest,
-            sandbox: SandboxPolicy::ReadOnly,
+            sandbox: SandboxPolicy::new_read_only_policy(),
         },
         ApprovalPreset {
             id: "plan-only",
             label: "Plan Only",
             description: "Can read and plan. No execution.",
             approval: AskForApproval::UnlessTrusted,
-            sandbox: SandboxPolicy::ReadOnly,
+            sandbox: SandboxPolicy::new_read_only_policy(),
         },
         ApprovalPreset {
             id: "delegate-only",
@@ -152,17 +152,25 @@ file = "tui/src/chatwidget.rs"
 [patches.query]
 type = "text"
 search = '''
+    fn set_skills(&mut self, skills: Option<Vec<SkillMetadata>>) {
+        self.bottom_pane.set_skills(skills);
+    }
+
     pub(crate) fn open_feedback_note('''
 
 [patches.operation]
 type = "replace"
 text = '''
+    fn set_skills(&mut self, skills: Option<Vec<SkillMetadata>>) {
+        self.bottom_pane.set_skills(skills);
+    }
+
     /// Cycle through approval presets with Ctrl+A
     ///
     /// Uses pattern matching to compare sandbox policies, since WorkspaceWrite
     /// variants have internal fields (writable_roots, etc.) that differ at runtime.
     pub(crate) fn cycle_approval_preset(&mut self) {
-        use codex_common::approval_presets::{builtin_approval_presets, ApprovalPreset};
+        use codex_utils_approval_presets::{builtin_approval_presets, ApprovalPreset};
 
         if self.bottom_pane.is_task_running() {
             self.add_info_message(
@@ -183,8 +191,8 @@ text = '''
             return;
         }
 
-        let current_approval = self.config.approval_policy.value();
-        let current_sandbox = self.config.sandbox_policy.get();
+        let current_approval = self.config.permissions.approval_policy.value();
+        let current_sandbox = self.config.permissions.sandbox_policy.get();
 
         // Use pattern matching for sandbox comparison - WorkspaceWrite has internal
         // fields that differ at runtime (writable_roots, etc.), so direct equality fails
@@ -207,6 +215,7 @@ text = '''
             cwd: None,
             approval_policy: Some(next.approval),
             sandbox_policy: Some(next.sandbox.clone()),
+            windows_sandbox_level: None,
             model: None,
             effort: None,
             summary: None,

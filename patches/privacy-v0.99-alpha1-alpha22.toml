@@ -303,8 +303,10 @@ pub async fn build_turn_metadata_header(_cwd: PathBuf) -> Option<String> {
     //
     // Keep references to the original helpers/types so this module remains warning-clean.
     let _ = (get_git_repo_root, get_head_commit_hash, get_git_remote_urls_assume_git_repo);
-    let _ = TurnMetadata {
+    let _ = TurnMetadataBag {
+        turn_id: None,
         workspaces: BTreeMap::new(),
+        sandbox: None,
     };
     None
 }

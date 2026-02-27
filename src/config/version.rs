@@ -44,10 +44,7 @@ impl std::error::Error for VersionError {}
 /// // None requirement means "apply to all versions"
 /// assert!(matches_requirement("1.0.0", None).unwrap());
 /// ```
-pub fn matches_requirement(
-    version: &str,
-    requirement: Option<&str>,
-) -> Result<bool, VersionError> {
+pub fn matches_requirement(version: &str, requirement: Option<&str>) -> Result<bool, VersionError> {
     // No requirement means "apply to all versions"
     let Some(req_str) = requirement else {
         return Ok(true);
@@ -71,7 +68,35 @@ pub fn matches_requirement(
         source: e.to_string(),
     })?;
 
-    Ok(req.matches(&version))
+    if req.matches(&version) {
+        return Ok(true);
+    }
+
+    // Semver pre-release matching rule: a pre-release version (e.g.
+    // 0.100.0-alpha.2) only matches comparators that reference the *same*
+    // major.minor.patch with a pre-release tag.  This means `>=0.99.0-alpha.21`
+    // will NOT match `0.100.0-alpha.2`, and even `>=0.92.0` won't match it.
+    //
+    // For our use case this is too strict.  If the workspace is a pre-release of
+    // a version that is strictly *newer* than every comparator's base version,
+    // we retry the match with the pre-release stripped.  This preserves correct
+    // behavior for intra-minor alpha ranges (e.g. >=0.99.0-alpha.10,
+    // <0.99.0-alpha.14 must NOT match 0.99.0-alpha.20).
+    if !version.pre.is_empty() {
+        let dominated = req.comparators.iter().all(|c| {
+            let c_minor = c.minor.unwrap_or(0);
+            let c_patch = c.patch.unwrap_or(0);
+            (version.major, version.minor, version.patch) > (c.major, c_minor, c_patch)
+        });
+        if dominated {
+            let base = Version::new(version.major, version.minor, version.patch);
+            if req.matches(&base) {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -142,14 +167,20 @@ mod tests {
     fn test_invalid_version() {
         let result = matches_requirement("not-a-version", Some(">=0.88.0"));
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), VersionError::InvalidVersion { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            VersionError::InvalidVersion { .. }
+        ));
     }
 
     #[test]
     fn test_invalid_requirement() {
         let result = matches_requirement("0.88.0", Some(">=bad-version"));
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), VersionError::InvalidRequirement { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            VersionError::InvalidRequirement { .. }
+        ));
     }
 
     #[test]
@@ -159,5 +190,31 @@ mod tests {
         assert!(matches_requirement("0.88.0-alpha.5", Some(req)).unwrap());
         assert!(matches_requirement("0.88.0", Some(req)).unwrap());
         assert!(!matches_requirement("0.88.0-alpha.3", Some(req)).unwrap());
+    }
+
+    #[test]
+    fn test_prerelease_cross_minor_fallback() {
+        // Core fix: pre-release of a newer minor version should match
+        // open-ended ranges from an older minor version.
+
+        // Open-ended lower bound — 0.100.0-alpha.2 is clearly "after" 0.99
+        assert!(matches_requirement("0.100.0-alpha.2", Some(">=0.99.0-alpha.21")).unwrap());
+        assert!(matches_requirement("0.100.0-alpha.2", Some(">=0.92.0")).unwrap());
+        assert!(matches_requirement("0.100.0-alpha.2", Some(">=0.88.0")).unwrap());
+        assert!(matches_requirement("0.100.0-alpha.2", Some(">=0.99.0-alpha.0")).unwrap());
+
+        // Bounded ranges for an older minor — upper bound blocks it
+        assert!(!matches_requirement(
+            "0.100.0-alpha.2",
+            Some(">=0.99.0-alpha.2, <0.99.0-alpha.10")
+        )
+        .unwrap());
+        assert!(
+            !matches_requirement("0.100.0-alpha.2", Some(">=0.88.0, <0.99.0-alpha.7")).unwrap()
+        );
+
+        // Same minor.patch alpha ordering still works (no fallback triggered)
+        assert!(!matches_requirement("0.99.0-alpha.12", Some(">=0.99.0-alpha.21")).unwrap());
+        assert!(matches_requirement("0.99.0-alpha.22", Some(">=0.99.0-alpha.21")).unwrap());
     }
 }

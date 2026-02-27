@@ -65,9 +65,9 @@ pub fn run_cargo_check(
     // Disable incremental compilation for deterministic results
     cmd.env("CARGO_INCREMENTAL", "0");
 
-    let output = cmd.output().map_err(|e| {
-        DiagnosticError::CargoFailed(format!("Failed to spawn cargo: {}", e))
-    })?;
+    let output = cmd
+        .output()
+        .map_err(|e| DiagnosticError::CargoFailed(format!("Failed to spawn cargo: {}", e)))?;
 
     let reader = std::io::BufReader::new(output.stdout.as_slice());
     parse_cargo_output(reader, workspace)
@@ -224,7 +224,8 @@ mod tests {
     #[test]
     fn test_parse_garbage_output() {
         // Simulate proc macro garbage mixed with JSON
-        let output = "some random text\n{\"reason\":\"build-finished\",\"success\":true}\nmore garbage";
+        let output =
+            "some random text\n{\"reason\":\"build-finished\",\"success\":true}\nmore garbage";
         let reader = std::io::BufReader::new(output.as_bytes());
         let diagnostics = parse_cargo_output(reader, Path::new("/tmp")).unwrap();
         // Should not crash, just return empty (build-finished isn't an error)

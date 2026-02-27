@@ -176,8 +176,8 @@ fn build_metadata(session_meta: &SessionMeta) -> Option<ThreadMetadataBuilder> {
 #[test]
 fn test_privacy_patches_apply() {
     let workspace = setup_mock_codex_workspace();
-    let patch_file = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("patches/privacy.toml");
+    let patch_file =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("patches/privacy.toml");
 
     // Load and apply patches
     let config = load_from_path(&patch_file).expect("Failed to load privacy.toml");
@@ -209,7 +209,10 @@ fn test_privacy_patches_apply() {
         }
     }
 
-    assert!(applied > 0 || already_applied > 0, "No patches were applied");
+    assert!(
+        applied > 0 || already_applied > 0,
+        "No patches were applied"
+    );
 
     // Verify otel/src/config.rs changes
     let otel_config = fs::read_to_string(workspace.path().join("otel/src/config.rs")).unwrap();
@@ -223,8 +226,7 @@ fn test_privacy_patches_apply() {
 
     // Should have simplified resolve_exporter
     assert!(
-        otel_config.contains("OtelExporter::None")
-            && otel_config.contains("PRIVACY PATCH"),
+        otel_config.contains("OtelExporter::None") && otel_config.contains("PRIVACY PATCH"),
         "resolve_exporter should return None with privacy patch comment"
     );
 
@@ -238,8 +240,7 @@ fn test_privacy_patches_apply() {
     );
 
     // Verify core/src/config/mod.rs changes
-    let config_mod =
-        fs::read_to_string(workspace.path().join("core/src/config/mod.rs")).unwrap();
+    let config_mod = fs::read_to_string(workspace.path().join("core/src/config/mod.rs")).unwrap();
 
     // Web search should default to Disabled
     assert!(
@@ -255,8 +256,8 @@ fn test_privacy_patches_apply() {
 #[test]
 fn test_privacy_patches_idempotent() {
     let workspace = setup_mock_codex_workspace();
-    let patch_file = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("patches/privacy.toml");
+    let patch_file =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("patches/privacy.toml");
 
     let config = load_from_path(&patch_file).expect("Failed to load privacy.toml");
 
@@ -264,7 +265,12 @@ fn test_privacy_patches_idempotent() {
     let results1 = apply_patches(&config, workspace.path(), "0.88.0");
     let successful1 = results1
         .iter()
-        .filter(|(_, r)| matches!(r, Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. })))
+        .filter(|(_, r)| {
+            matches!(
+                r,
+                Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. })
+            )
+        })
         .count();
 
     println!("First run: {} successful patches", successful1);
@@ -273,7 +279,12 @@ fn test_privacy_patches_idempotent() {
     let results2 = apply_patches(&config, workspace.path(), "0.88.0");
     let successful2 = results2
         .iter()
-        .filter(|(_, r)| matches!(r, Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. })))
+        .filter(|(_, r)| {
+            matches!(
+                r,
+                Ok(PatchResult::Applied { .. }) | Ok(PatchResult::AlreadyApplied { .. })
+            )
+        })
         .count();
 
     println!("Second run: {} successful patches", successful2);
@@ -293,14 +304,17 @@ fn test_privacy_patches_idempotent() {
     println!("Second run: {} already applied", already_applied2);
 
     // At least some patches should report as already applied
-    assert!(already_applied2 > 0, "At least some patches should report as already applied on second run");
+    assert!(
+        already_applied2 > 0,
+        "At least some patches should report as already applied on second run"
+    );
 }
 
 #[test]
 fn test_privacy_patches_no_telemetry_strings() {
     let workspace = setup_mock_codex_workspace();
-    let patch_file = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("patches/privacy.toml");
+    let patch_file =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("patches/privacy.toml");
 
     let config = load_from_path(&patch_file).expect("Failed to load privacy.toml");
     apply_patches(&config, workspace.path(), "0.88.0");
@@ -319,6 +333,9 @@ fn test_privacy_patches_no_telemetry_strings() {
         .filter(|line| !line.trim().starts_with("//"))
         .any(|line| line.contains("STATSIG_API_KEY:"));
 
-    assert!(!has_live_endpoint, "Live ab.chatgpt.com endpoint should not exist");
+    assert!(
+        !has_live_endpoint,
+        "Live ab.chatgpt.com endpoint should not exist"
+    );
     assert!(!has_live_api_key, "Live API key should not exist");
 }
