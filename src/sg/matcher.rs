@@ -1,7 +1,8 @@
+use crate::cache;
 use crate::sg::errors::AstGrepError;
 use crate::sg::lang::rust;
 use ast_grep_core::tree_sitter::StrDoc;
-use ast_grep_core::{AstGrep, NodeMatch, Pattern};
+use ast_grep_core::{AstGrep, NodeMatch};
 use ast_grep_language::SupportLang;
 use std::collections::HashMap;
 
@@ -66,7 +67,7 @@ impl PatternMatcher {
 
     /// Find all matches for a pattern.
     pub fn find_all(&self, pattern: &str) -> Result<Vec<PatternMatch>, AstGrepError> {
-        let pat = Pattern::new(pattern, rust());
+        let pat = cache::get_or_compile_pattern(pattern, rust());
         let root = self.sg.root();
         let matches: Vec<_> = root.find_all(&pat).collect();
 
@@ -84,14 +85,14 @@ impl PatternMatcher {
 
         match matches.len() {
             0 => Err(AstGrepError::NoMatch),
-            1 => Ok(matches.into_iter().next().unwrap()),
+            1 => Ok(matches.into_iter().next().expect("len checked == 1")),
             n => Err(AstGrepError::AmbiguousMatch { count: n }),
         }
     }
 
     /// Check if a pattern has any matches.
     pub fn has_match(&self, pattern: &str) -> bool {
-        let pat = Pattern::new(pattern, rust());
+        let pat = cache::get_or_compile_pattern(pattern, rust());
         self.sg.root().find(&pat).is_some()
     }
 
@@ -171,7 +172,7 @@ impl PatternMatcher {
 
             // If we have a field filter, check it
             if let Some((field_name, pattern)) = field_filter {
-                let pat = Pattern::new(pattern, rust());
+                let pat = cache::get_or_compile_pattern(pattern, rust());
                 let field_node = node.field(field_name);
 
                 if let Some(field) = field_node {
@@ -330,7 +331,10 @@ fn bar() {}
         let matcher = PatternMatcher::new(source);
         let result = matcher.find_unique("fn $NAME() {}");
 
-        assert!(matches!(result, Err(AstGrepError::AmbiguousMatch { count: 2 })));
+        assert!(matches!(
+            result,
+            Err(AstGrepError::AmbiguousMatch { count: 2 })
+        ));
     }
 
     #[test]
@@ -399,7 +403,9 @@ struct Bar { y: String }
         let matcher = PatternMatcher::new(source);
 
         // Find all struct items
-        let structs = matcher.find_by_kind_with_field("struct_item", None).unwrap();
+        let structs = matcher
+            .find_by_kind_with_field("struct_item", None)
+            .unwrap();
         assert_eq!(structs.len(), 2);
 
         // Find struct with specific name - use metavar to match the type_identifier

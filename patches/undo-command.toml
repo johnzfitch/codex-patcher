@@ -1,0 +1,117 @@
+# =============================================================================
+# UNDO SLASH COMMAND PATCH - Re-enable /undo in the TUI
+# =============================================================================
+#
+# Restores the /undo slash command by re-enabling the enum variant, description,
+# and handler wiring. This makes the TUI able to issue Op::Undo again.
+#
+# Files modified:
+# - codex-rs/tui/src/slash_command.rs
+# - codex-rs/tui/src/chatwidget.rs
+#
+# Version: Targets Codex rust-v0.93.0 and later
+# =============================================================================
+
+[meta]
+name = "undo-slash-command"
+description = "Re-enable the /undo slash command in the TUI"
+version_range = ">=0.93.0"
+workspace_relative = true
+
+# =============================================================================
+# Patch 1: Enable Undo in SlashCommand enum
+# =============================================================================
+
+[[patches]]
+id = "enable-undo-slash-command-enum"
+file = "tui/src/slash_command.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    Agent,
+    // Undo,
+    Diff,
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    Agent,
+    Undo,
+    Diff,
+'''
+
+# =============================================================================
+# Patch 2: Add Undo description
+# =============================================================================
+
+[[patches]]
+id = "enable-undo-description"
+file = "tui/src/slash_command.rs"
+
+[patches.query]
+type = "text"
+search = '''
+            SlashCommand::Fork => "fork the current chat",
+            // SlashCommand::Undo => "ask Codex to undo a turn",
+            SlashCommand::Quit | SlashCommand::Exit => "exit Codex",
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+            SlashCommand::Fork => "fork the current chat",
+            SlashCommand::Undo => "ask Codex to undo a turn",
+            SlashCommand::Quit | SlashCommand::Exit => "exit Codex",
+'''
+
+# =============================================================================
+# Patch 3: Make Undo unavailable during tasks
+# =============================================================================
+
+[[patches]]
+id = "enable-undo-availability"
+file = "tui/src/slash_command.rs"
+
+[patches.query]
+type = "text"
+search = '''
+            | SlashCommand::Compact
+            // | SlashCommand::Undo
+            | SlashCommand::Model
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+            | SlashCommand::Compact
+            | SlashCommand::Undo
+            | SlashCommand::Model
+'''
+
+# =============================================================================
+# Patch 4: Wire /undo in ChatWidget command handler
+# =============================================================================
+
+[[patches]]
+id = "enable-undo-handler"
+file = "tui/src/chatwidget.rs"
+
+[patches.query]
+type = "text"
+search = '''
+            // SlashCommand::Undo => {
+            //     self.app_event_tx.send(AppEvent::CodexOp(Op::Undo));
+            // }
+            SlashCommand::Diff => {
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+            SlashCommand::Undo => {
+                self.app_event_tx.send(AppEvent::CodexOp(Op::Undo));
+            }
+            SlashCommand::Diff => {
+'''

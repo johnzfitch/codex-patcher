@@ -1,0 +1,108 @@
+# =============================================================================
+# ANALYTICS COUNTERS PATCH - Remove User Behavior Tracking Counters
+# =============================================================================
+#
+# Commit 529b5395 (0.99.0-alpha.2) added analytics counters that track
+# user behavior patterns: thread forking (with source attribution) and
+# thread renaming. These build a behavioral profile of session management.
+#
+# This patch removes the analytics counter calls from the fork and rename
+# code paths.
+#
+# Affected files:
+# - codex-rs/tui/src/app.rs: fork counters (CLI subcommand + slash command)
+# - codex-rs/tui/src/chatwidget.rs: rename counters
+#
+# Version: Targets Codex rust-v0.99.0-alpha.2 and later
+# =============================================================================
+
+[meta]
+name = "analytics-counters"
+description = "Remove user behavior tracking counters for fork and rename commands"
+version_range = ">=0.99.0-alpha.2"
+workspace_relative = true
+
+# =============================================================================
+# Patch 1: Remove fork counter from CLI subcommand path
+# =============================================================================
+
+[[patches]]
+id = "remove-fork-counter-cli"
+file = "tui/src/app.rs"
+
+[patches.query]
+type = "text"
+search = '''
+                otel_manager.counter("codex.thread.fork", 1, &[("source", "cli_subcommand")]);
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+                // PRIVACY PATCH: Removed fork analytics counter (was: codex.thread.fork)
+'''
+
+# =============================================================================
+# Patch 2: Remove fork counter from slash command path
+# =============================================================================
+
+[[patches]]
+id = "remove-fork-counter-slash"
+file = "tui/src/app.rs"
+
+[patches.query]
+type = "text"
+search = '''
+                self.otel_manager
+                    .counter("codex.thread.fork", 1, &[("source", "slash_command")]);
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+                // PRIVACY PATCH: Removed fork analytics counter (was: codex.thread.fork)
+'''
+
+# =============================================================================
+# Patch 3: Remove rename counter from slash command handler
+# =============================================================================
+
+[[patches]]
+id = "remove-rename-counter-slash"
+file = "tui/src/chatwidget.rs"
+
+[patches.query]
+type = "text"
+search = '''
+                self.otel_manager.counter("codex.thread.rename", 1, &[]);
+                self.show_rename_prompt();
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+                // PRIVACY PATCH: Removed rename analytics counter (was: codex.thread.rename)
+                self.show_rename_prompt();
+'''
+
+# =============================================================================
+# Patch 4: Remove rename counter from inline args path
+# =============================================================================
+
+[[patches]]
+id = "remove-rename-counter-inline"
+file = "tui/src/chatwidget.rs"
+
+[patches.query]
+type = "text"
+search = '''
+            SlashCommand::Rename if !trimmed.is_empty() => {
+                self.otel_manager.counter("codex.thread.rename", 1, &[]);
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+            SlashCommand::Rename if !trimmed.is_empty() => {
+                // PRIVACY PATCH: Removed rename analytics counter (was: codex.thread.rename)
+'''

@@ -7,7 +7,7 @@ Automated code patching system for Rust. Applies privacy/performance patches to 
 ## Installation
 
 ```bash
-git clone https://github.com/your-org/codex-patcher.git
+git clone https://github.com/johnzfitch/codex-patcher.git
 cd codex-patcher
 cargo build --release
 ```

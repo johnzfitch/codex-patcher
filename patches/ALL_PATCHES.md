@@ -7,6 +7,7 @@ This document describes all patches in the codex-patcher system for maintaining 
 | File | Purpose | Status | Files Modified |
 |------|---------|--------|----------------|
 | `privacy.toml` | Disable Statsig telemetry | ✅ Tested on 0.88.0 | otel/src/config.rs, core/src/config/types.rs |
+| `memory-safety-regressions.toml` | Restore memory controls and add explicit destructive confirmation | ✅ Tested on 0.101.0-alpha.1 | core/src/memories/mod.rs, core/src/rollout/policy.rs, core/src/codex.rs |
 | `performance.toml` | Zen 5 optimized profile (manual) | ⚠️ Manual install | Cargo.toml |
 | `zack-profile.toml` | Profile definition reference | 📄 Reference only | N/A |
 | `approvals-ui.toml` | Simplified 4-preset approval UI | 🔄 For 0.91.0+ | common/src/approval_presets.rs, tui/src/bottom_pane/footer.rs |
@@ -21,16 +22,19 @@ For a clean 0.91.0+ build from upstream:
 # 1. Privacy patches (always apply first)
 just patch-file ~/dev/codex/codex-rs patches/privacy.toml
 
-# 2. Subagent limit (if you want 8 instead of 6)
+# 2. Memory safety regressions (0.101.x hardening)
+just patch-file ~/dev/codex/codex-rs patches/memory-safety-regressions.toml
+
+# 3. Subagent limit (if you want 8 instead of 6)
 just patch-file ~/dev/codex/codex-rs patches/subagent-limit.toml
 
-# 3. Approvals UI (simplified presets)
+# 4. Approvals UI (simplified presets)
 just patch-file ~/dev/codex/codex-rs patches/approvals-ui.toml
 
-# 4. Cargo config optimizations (optional)
+# 5. Cargo config optimizations (optional)
 just patch-file ~/dev/codex/codex-rs patches/cargo-config.toml
 
-# 5. Zack profile (manual - TOML insertion not yet automated)
+# 6. Zack profile (manual - TOML insertion not yet automated)
 tail -n +33 patches/zack-profile.toml >> ~/dev/codex/codex-rs/Cargo.toml
 ```
 
@@ -49,7 +53,7 @@ just patch ~/dev/codex/codex-rs
 **What it does:**
 - Disables Statsig telemetry resolver (always returns `OtelExporter::None`)
 - Removes hardcoded endpoint: `https://ab.chatgpt.com/otlp/v1/metrics`
-- Removes hardcoded API key: `client-MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO`
+- Removes hardcoded API key constant (`STATSIG_API_KEY`)
 - Changes default metrics_exporter from `Statsig` to `None`
 
 **Files modified:**
@@ -63,7 +67,6 @@ just patch ~/dev/codex/codex-rs
 ```bash
 strings target/zack/codex | grep -i statsig          # Should be empty
 strings target/zack/codex | grep "ab.chatgpt.com"    # Should be empty
-strings target/zack/codex | grep "MkRuleRQBd6"       # Should be empty
 ```
 
 **Status:** ✅ Tested and working on rust-v0.88.0-alpha.17
@@ -199,10 +202,11 @@ rustflags = [
 
 ## Version Compatibility
 
-| Codex Version | Privacy | Performance | Approvals UI | Subagent Limit | Cargo Config |
-|---------------|---------|-------------|--------------|----------------|--------------|
-| 0.88.0-alpha.17 | ✅ | ✅ Manual | ⚠️ N/A | ⚠️ N/A | ✅ |
-| 0.91.0+ | ✅ | ✅ Manual | ✅ | ✅ | ✅ |
+| Codex Version | Privacy | Memory Safety | Performance | Approvals UI | Subagent Limit | Cargo Config |
+|---------------|---------|---------------|-------------|--------------|----------------|--------------|
+| 0.88.0-alpha.17 | ✅ | ⚠️ N/A | ✅ Manual | ⚠️ N/A | ⚠️ N/A | ✅ |
+| 0.91.0+ | ✅ | ⚠️ N/A | ✅ Manual | ✅ | ✅ | ✅ |
+| 0.101.0-alpha.1 to <0.102.0 | ✅ | ✅ | ✅ Manual | ✅ | ✅ | ✅ |
 
 ## Testing Patches
 

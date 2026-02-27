@@ -38,9 +38,11 @@
 //! }
 //! ```
 
+pub mod cache;
 pub mod compiler;
 pub mod config;
 pub mod edit;
+pub mod pool;
 pub mod safety;
 pub mod sg;
 pub mod toml;
@@ -59,6 +61,5 @@ pub use ts::{
     TreeSitterError,
 };
 pub use validate::{
-    syn_validate, ErrorLocation, ParseValidator, SelectorValidator, ValidatedEdit,
-    ValidationError,
+    syn_validate, ErrorLocation, ParseValidator, SelectorValidator, ValidatedEdit, ValidationError,
 };

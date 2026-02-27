@@ -62,13 +62,13 @@ jobs:
           RUSTDOCFLAGS: -Dwarnings
 
   msrv:
-    name: MSRV (1.70.0)
+    name: MSRV (1.78.0)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.70.0
+      - uses: dtolnay/rust-toolchain@1.78.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets
+      - run: cargo check --all-targets --locked
 
   # Cross-platform builds
   build:

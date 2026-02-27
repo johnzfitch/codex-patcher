@@ -159,6 +159,49 @@ impl PatchConfig {
                 }
                 Operation::Delete { insert_comment: _ } => {}
             }
+
+            let query_kind = match &patch.query {
+                Query::Toml { .. } => "toml",
+                Query::AstGrep { .. } => "ast-grep",
+                Query::TreeSitter { .. } => "tree-sitter",
+                Query::Text { .. } => "text",
+            };
+            let operation_kind = match &patch.operation {
+                Operation::InsertSection { .. } => "insert-section",
+                Operation::AppendSection { .. } => "append-section",
+                Operation::ReplaceValue { .. } => "replace-value",
+                Operation::DeleteSection => "delete-section",
+                Operation::ReplaceKey { .. } => "replace-key",
+                Operation::Replace { .. } => "replace",
+                Operation::ReplaceCapture { .. } => "replace-capture",
+                Operation::Delete { .. } => "delete",
+            };
+
+            let supports_combo = matches!(
+                (&patch.query, &patch.operation),
+                (Query::Text { .. }, Operation::Replace { .. })
+                    | (
+                        Query::AstGrep { .. } | Query::TreeSitter { .. },
+                        Operation::Replace { .. } | Operation::Delete { .. }
+                    )
+                    | (
+                        Query::Toml { .. },
+                        Operation::InsertSection { .. }
+                            | Operation::AppendSection { .. }
+                            | Operation::ReplaceValue { .. }
+                            | Operation::DeleteSection
+                            | Operation::ReplaceKey { .. }
+                    )
+            );
+
+            if !supports_combo {
+                issues.push(ValidationIssue::InvalidCombo {
+                    patch_id: Some(patch.id.clone()),
+                    message: format!(
+                        "query type '{query_kind}' does not support operation '{operation_kind}'"
+                    ),
+                });
+            }
         }
 
         if issues.is_empty() {

@@ -1,0 +1,54 @@
+# =============================================================================
+# NO EMPLOYEE DETECTION - Skip email checks, always use GitHub feedback
+# =============================================================================
+#
+# Removes the @openai.com email check that routes OpenAI employees to internal
+# Slack feedback. Instead, always uses the standard GitHub issue flow.
+#
+# Benefits:
+# - No email domain inspection
+# - Simpler code path (no conditional branching)
+# - Same feedback experience for everyone
+#
+# Files modified:
+# - codex-rs/tui/src/app.rs
+#
+# Version: Targets Codex rust-v0.93.0-alpha.18 and later
+# =============================================================================
+
+[meta]
+name = "no-employee-detection"
+description = "Skip email checks, always use GitHub feedback flow"
+version_range = ">=0.93.0"
+workspace_relative = true
+
+# =============================================================================
+# Patch 1: Remove email check, always use External audience
+# =============================================================================
+
+[[patches]]
+id = "remove-employee-email-check"
+file = "tui/src/app.rs"
+
+[patches.query]
+type = "text"
+search = '''
+        // Determine who should see internal Slack routing. We treat
+        // `@openai.com` emails as employees and default to `External` when the
+        // email is unavailable (for example, API key auth).
+        let feedback_audience = if auth_ref
+            .and_then(CodexAuth::get_account_email)
+            .is_some_and(|email| email.ends_with("@openai.com"))
+        {
+            FeedbackAudience::OpenAiEmployee
+        } else {
+            FeedbackAudience::External
+        };
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+        // Always use external GitHub feedback flow
+        let feedback_audience = FeedbackAudience::External;
+'''

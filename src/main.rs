@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use codex_patcher::config::{apply_patches, load_from_path, ApplicationError, PatchResult};
+use codex_patcher::config::{
+    apply_patches, check_patches, load_from_path, ApplicationError, PatchResult,
+};
 use colored::Colorize;
 use similar::{ChangeTag, TextDiff};
 use std::collections::HashMap;
@@ -77,30 +79,46 @@ fn main() -> Result<()> {
     }
 }
 
-/// Helper: Discover all .toml patch files in patches/ directory
+/// Helper: Discover all .toml patch files in a patches/ directory.
+///
+/// Discovery order:
+/// 1. `<workspace>/patches` (allows keeping patch files alongside the target).
+/// 2. `./patches` relative to the current working directory (typical when
+///    running from the codex-patcher repo).
 fn discover_patch_files(workspace: &Path) -> Result<Vec<PathBuf>> {
-    let patches_dir = workspace.join("patches");
-    if !patches_dir.exists() {
-        anyhow::bail!("patches/ directory not found in workspace");
-    }
+    let cwd_patches_dir = env::current_dir().ok().map(|cwd| cwd.join("patches"));
+    let workspace_patches_dir = workspace.join("patches");
 
-    let mut files = Vec::new();
-    for entry in WalkDir::new(&patches_dir).max_depth(1) {
-        let entry = entry?;
-        if entry.file_type().is_file()
-            && entry.path().extension().and_then(|s| s.to_str()) == Some("toml")
-        {
-            files.push(entry.path().to_path_buf());
+    let candidate_dirs: Vec<PathBuf> = std::iter::once(workspace_patches_dir.clone())
+        .chain(cwd_patches_dir)
+        .collect();
+
+    for patches_dir in candidate_dirs {
+        if !patches_dir.exists() {
+            continue;
+        }
+
+        let mut files = Vec::new();
+        for entry in WalkDir::new(&patches_dir).max_depth(1) {
+            let entry = entry?;
+            if entry.file_type().is_file()
+                && entry.path().extension().and_then(|s| s.to_str()) == Some("toml")
+            {
+                files.push(entry.path().to_path_buf());
+            }
+        }
+
+        files.sort();
+
+        if !files.is_empty() {
+            return Ok(files);
         }
     }
 
-    files.sort();
-
-    if files.is_empty() {
-        anyhow::bail!("No .toml patch files found in {}", patches_dir.display());
-    }
-
-    Ok(files)
+    anyhow::bail!(
+        "No .toml patch files found in either ./patches or {}/patches",
+        workspace.display()
+    )
 }
 
 /// Resolve workspace path using multiple detection strategies
@@ -134,7 +152,10 @@ fn resolve_workspace(cli_workspace: Option<PathBuf>) -> Result<PathBuf> {
 
     // 3. Auto-detect from current directory
     if let Some(path) = auto_detect_workspace() {
-        println!("{}", format!("Auto-detected workspace: {}", path.display()).dimmed());
+        println!(
+            "{}",
+            format!("Auto-detected workspace: {}", path.display()).dimmed()
+        );
         return Ok(path);
     }
 
@@ -182,70 +203,120 @@ fn auto_detect_workspace() -> Option<PathBuf> {
     None
 }
 
-/// Find Codex workspace by checking git remotes
+/// Find Codex workspace by checking git remotes.
+///
+/// Parses `git remote -v` output line-by-line, extracting the URL field
+/// (second whitespace-delimited token) and checking for the openai/codex
+/// repo path. Handles both HTTPS and SSH URL formats.
 fn find_codex_via_git() -> Option<PathBuf> {
-    let output = Command::new("git")
-        .args(["remote", "-v"])
-        .output()
-        .ok()?;
+    let output = Command::new("git").args(["remote", "-v"]).output().ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
 
     let remotes = String::from_utf8_lossy(&output.stdout);
 
-    // Check if any remote points to OpenAI's Codex repo
-    if remotes.contains("github.com/openai/codex") || remotes.contains("github.com:openai/codex")
-    {
-        let root_output = Command::new("git")
-            .args(["rev-parse", "--show-toplevel"])
-            .output()
-            .ok()?;
+    // Parse each line: "origin\thttps://github.com/openai/codex.git (fetch)"
+    // Extract the URL (second field) and check for the repo path.
+    let is_codex_remote = remotes.lines().any(|line| {
+        let url = line.split_whitespace().nth(1).unwrap_or("");
+        // HTTPS:   https://github.com/openai/codex[.git]
+        // SCP SSH: git@github.com:openai/codex[.git]  → ends_with :openai/codex
+        // SSH URL: ssh://git@github.com/openai/codex  → ends_with /openai/codex
+        let normalized = url.trim_end_matches(".git").trim_end_matches('/');
+        normalized.ends_with("github.com/openai/codex")
+            || normalized.ends_with("github.com:openai/codex")
+    });
 
-        let git_root = String::from_utf8_lossy(&root_output.stdout)
-            .trim()
-            .to_string();
-
-        let codex_rs = PathBuf::from(git_root).join("codex-rs");
-
-        if codex_rs.exists() {
-            return Some(codex_rs);
-        }
+    if !is_codex_remote {
+        return None;
     }
 
-    None
+    let root_output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+
+    if !root_output.status.success() {
+        return None;
+    }
+
+    let git_root = String::from_utf8_lossy(&root_output.stdout)
+        .trim()
+        .to_string();
+
+    let codex_rs = PathBuf::from(git_root).join("codex-rs");
+
+    if codex_rs.exists() {
+        Some(codex_rs)
+    } else {
+        None
+    }
 }
 
 /// Helper: Read workspace version from Cargo.toml
 fn read_workspace_version(workspace: &Path) -> Result<String> {
     use cargo_metadata::MetadataCommand;
 
-    let metadata = MetadataCommand::new()
-        .manifest_path(workspace.join("Cargo.toml"))
-        .exec()?;
+    let manifest_path = workspace.join("Cargo.toml");
 
-    // Try workspace packages first (for multi-crate workspaces)
-    if let Some(pkg) = metadata.workspace_packages().first() {
-        return Ok(pkg.version.to_string());
-    }
+    // Prefer `cargo metadata` when available since it handles workspaces and
+    // inherited workspace.package versions correctly. However, it can fail in
+    // minimal / mock workspaces (tests) or when the manifest is incomplete.
+    if let Ok(metadata) = MetadataCommand::new().manifest_path(&manifest_path).exec() {
+        // Try workspace packages first (for multi-crate workspaces)
+        if let Some(pkg) = metadata.workspace_packages().first() {
+            return Ok(pkg.version.to_string());
+        }
 
-    // Try root package (for single-crate projects)
-    if let Some(resolve) = &metadata.resolve {
-        if let Some(root) = &resolve.root {
-            if let Some(pkg) = metadata.packages.iter().find(|p| &p.id == root) {
-                return Ok(pkg.version.to_string());
+        // Try root package (for single-crate projects)
+        if let Some(resolve) = &metadata.resolve {
+            if let Some(root) = &resolve.root {
+                if let Some(pkg) = metadata.packages.iter().find(|p| &p.id == root) {
+                    return Ok(pkg.version.to_string());
+                }
             }
+        }
+
+        // Fallback: use first package
+        if let Some(pkg) = metadata.packages.first() {
+            return Ok(pkg.version.to_string());
         }
     }
 
-    // Fallback: use first package
-    if let Some(pkg) = metadata.packages.first() {
-        return Ok(pkg.version.to_string());
+    // Fallback: parse Cargo.toml directly (works for partial fixtures).
+    let manifest = fs::read_to_string(&manifest_path)?;
+    let doc = manifest
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", manifest_path.display()))?;
+
+    if let Some(version) = doc
+        .get("package")
+        .and_then(|pkg| pkg.get("version"))
+        .and_then(|v| v.as_str())
+    {
+        return Ok(version.to_string());
     }
 
-    anyhow::bail!("No package found in {}", workspace.display())
+    if let Some(version) = doc
+        .get("workspace")
+        .and_then(|ws| ws.get("package"))
+        .and_then(|pkg| pkg.get("version"))
+        .and_then(|v| v.as_str())
+    {
+        return Ok(version.to_string());
+    }
+
+    anyhow::bail!("Could not read version from {}", manifest_path.display())
 }
 
 /// Helper: Show unified diff between original and modified content
 fn display_diff(file: &Path, original: &str, modified: &str) {
-    println!("\n{}", format!("--- {} (original)", file.display()).dimmed());
+    println!(
+        "\n{}",
+        format!("--- {} (original)", file.display()).dimmed()
+    );
     println!("{}", format!("+++ {} (patched)", file.display()).dimmed());
 
     let diff = TextDiff::from_lines(original, modified);
@@ -277,11 +348,13 @@ fn cmd_apply(
     };
 
     // 3. Determine workspace version
-    let workspace_version = read_workspace_version(&workspace)
-        .unwrap_or_else(|_| {
-            eprintln!("{}", "Warning: Could not read workspace version from Cargo.toml, using 0.0.0".yellow());
-            "0.0.0".to_string()
-        });
+    let workspace_version = read_workspace_version(&workspace).unwrap_or_else(|_| {
+        eprintln!(
+            "{}",
+            "Warning: Could not read workspace version from Cargo.toml, using 0.0.0".yellow()
+        );
+        "0.0.0".to_string()
+    });
 
     println!("Workspace: {}", workspace.display());
     println!("Version: {}", workspace_version);
@@ -303,15 +376,23 @@ fn cmd_apply(
             continue;
         }
 
-        // Capture file contents before applying (for diff output)
+        // Capture file contents before applying (for diff output).
+        // Only read files that the patches will touch, to avoid reading
+        // unrelated files in large workspaces.
         let mut file_contents_before: HashMap<PathBuf, String> = HashMap::new();
         if show_diff {
-            for patch in &config.patches {
-                let file_path = if config.meta.workspace_relative {
-                    workspace.join(&patch.file)
-                } else {
-                    PathBuf::from(&patch.file)
-                };
+            let target_files: std::collections::HashSet<PathBuf> = config
+                .patches
+                .iter()
+                .map(|p| {
+                    if config.meta.workspace_relative {
+                        workspace.join(&p.file)
+                    } else {
+                        PathBuf::from(&p.file)
+                    }
+                })
+                .collect();
+            for file_path in target_files {
                 if file_path.exists() {
                     if let Ok(content) = fs::read_to_string(&file_path) {
                         file_contents_before.insert(file_path, content);
@@ -323,7 +404,10 @@ fn cmd_apply(
         // Apply patches (or dry-run)
         let results = if dry_run {
             println!("{}", "  [DRY RUN - showing what would be applied]".cyan());
-            println!("{}", "  Note: Patches are idempotent, so this actually applies them to check".dimmed());
+            println!(
+                "{}",
+                "  Note: Patches are idempotent, so this actually applies them to check".dimmed()
+            );
             apply_patches(&config, &workspace, &workspace_version)
         } else {
             apply_patches(&config, &workspace, &workspace_version)
@@ -334,9 +418,19 @@ fn cmd_apply(
             match result {
                 Ok(PatchResult::Applied { ref file }) => {
                     if dry_run {
-                        println!("{} {}: Would apply to {}", "✓".green(), patch_id, file.display());
+                        println!(
+                            "{} {}: Would apply to {}",
+                            "✓".green(),
+                            patch_id,
+                            file.display()
+                        );
                     } else {
-                        println!("{} {}: Applied to {}", "✓".green(), patch_id, file.display());
+                        println!(
+                            "{} {}: Applied to {}",
+                            "✓".green(),
+                            patch_id,
+                            file.display()
+                        );
                     }
                     total_applied += 1;
 
@@ -351,7 +445,12 @@ fn cmd_apply(
                     }
                 }
                 Ok(PatchResult::AlreadyApplied { file }) => {
-                    println!("{} {}: Already applied to {}", "⊙".yellow(), patch_id, file.display());
+                    println!(
+                        "{} {}: Already applied to {}",
+                        "⊙".yellow(),
+                        patch_id,
+                        file.display()
+                    );
                     total_already_applied += 1;
                 }
                 Ok(PatchResult::SkippedVersion { reason }) => {
@@ -378,7 +477,11 @@ fn cmd_apply(
                             eprintln!("    - Code was moved to different file");
                         }
                         ApplicationError::AmbiguousMatch { file, count } => {
-                            eprintln!("  {}", format!("CONFLICT: Query matched {} locations (expected 1)", count).red());
+                            eprintln!(
+                                "  {}",
+                                format!("CONFLICT: Query matched {} locations (expected 1)", count)
+                                    .red()
+                            );
                             eprintln!("  File: {}", file.display());
                             eprintln!("  Action: Refine the query pattern to be more specific");
                         }
@@ -397,7 +500,10 @@ fn cmd_apply(
     // 6. Summary
     println!("{}", "Summary:".bold());
     println!("  {} applied", format!("{}", total_applied).green());
-    println!("  {} already applied", format!("{}", total_already_applied).yellow());
+    println!(
+        "  {} already applied",
+        format!("{}", total_already_applied).yellow()
+    );
     println!("  {} skipped", format!("{}", total_skipped).cyan());
     println!("  {} failed", format!("{}", total_failed).red());
 
@@ -416,11 +522,13 @@ fn cmd_status(workspace: Option<PathBuf>) -> Result<()> {
     let patch_files = discover_patch_files(&workspace)?;
 
     // 3. Determine workspace version
-    let workspace_version = read_workspace_version(&workspace)
-        .unwrap_or_else(|_| {
-            eprintln!("{}", "Warning: Could not read workspace version from Cargo.toml, using 0.0.0".yellow());
-            "0.0.0".to_string()
-        });
+    let workspace_version = read_workspace_version(&workspace).unwrap_or_else(|_| {
+        eprintln!(
+            "{}",
+            "Warning: Could not read workspace version from Cargo.toml, using 0.0.0".yellow()
+        );
+        "0.0.0".to_string()
+    });
 
     println!("{}", "Patch Status Report".bold());
     println!("Workspace: {}", workspace.display());
@@ -431,17 +539,15 @@ fn cmd_status(workspace: Option<PathBuf>) -> Result<()> {
     let mut not_applied = Vec::new();
     let mut skipped = Vec::new();
 
-    // 4. Check status of all patches
-    // Note: We use apply_patches which is idempotent - it checks if patches
-    // are already applied before applying them
+    // 4. Check status of all patches (read-only; does not mutate workspace files)
     for patch_file in patch_files {
         let config = load_from_path(&patch_file)?;
-        let results = apply_patches(&config, &workspace, &workspace_version);
+        let results = check_patches(&config, &workspace, &workspace_version);
 
         for (patch_id, result) in results {
             match result {
                 Ok(PatchResult::Applied { .. }) => {
-                    // Patch was not applied, but we just applied it
+                    // Patch target exists and would be changed if applied.
                     not_applied.push((patch_id, "target found but was not applied".to_string()));
                 }
                 Ok(PatchResult::AlreadyApplied { .. }) => {
@@ -462,7 +568,12 @@ fn cmd_status(workspace: Option<PathBuf>) -> Result<()> {
 
     // 5. Report grouped by status
     if !applied.is_empty() {
-        println!("{} {} ({} patches)", "✓".green(), "APPLIED".green().bold(), applied.len());
+        println!(
+            "{} {} ({} patches)",
+            "✓".green(),
+            "APPLIED".green().bold(),
+            applied.len()
+        );
         for id in &applied {
             println!("  - {}", id);
         }
@@ -470,7 +581,12 @@ fn cmd_status(workspace: Option<PathBuf>) -> Result<()> {
     }
 
     if !not_applied.is_empty() {
-        println!("{} {} ({} patches)", "⊙".yellow(), "NOT APPLIED".yellow().bold(), not_applied.len());
+        println!(
+            "{} {} ({} patches)",
+            "⊙".yellow(),
+            "NOT APPLIED".yellow().bold(),
+            not_applied.len()
+        );
         for (id, reason) in &not_applied {
             println!("  - {} ({})", id, reason.dimmed());
         }
@@ -478,7 +594,12 @@ fn cmd_status(workspace: Option<PathBuf>) -> Result<()> {
     }
 
     if !skipped.is_empty() {
-        println!("{} {} ({} patches)", "⊘".cyan(), "SKIPPED".cyan().bold(), skipped.len());
+        println!(
+            "{} {} ({} patches)",
+            "⊘".cyan(),
+            "SKIPPED".cyan().bold(),
+            skipped.len()
+        );
         for (id, reason) in &skipped {
             println!("  - {} ({})", id, reason.dimmed());
         }
@@ -496,11 +617,13 @@ fn cmd_verify(workspace: Option<PathBuf>) -> Result<()> {
     let patch_files = discover_patch_files(&workspace)?;
 
     // 3. Determine workspace version
-    let workspace_version = read_workspace_version(&workspace)
-        .unwrap_or_else(|_| {
-            eprintln!("{}", "Warning: Could not read workspace version from Cargo.toml, using 0.0.0".yellow());
-            "0.0.0".to_string()
-        });
+    let workspace_version = read_workspace_version(&workspace).unwrap_or_else(|_| {
+        eprintln!(
+            "{}",
+            "Warning: Could not read workspace version from Cargo.toml, using 0.0.0".yellow()
+        );
+        "0.0.0".to_string()
+    });
 
     println!("{}", "Verifying patches...".bold());
     println!("Workspace: {}", workspace.display());
@@ -514,7 +637,7 @@ fn cmd_verify(workspace: Option<PathBuf>) -> Result<()> {
     // 4. Check verification for all patches
     for patch_file in patch_files {
         let config = load_from_path(&patch_file)?;
-        let results = apply_patches(&config, &workspace, &workspace_version);
+        let results = check_patches(&config, &workspace, &workspace_version);
 
         for (patch_id, result) in results {
             match result {
@@ -534,7 +657,10 @@ fn cmd_verify(workspace: Option<PathBuf>) -> Result<()> {
                     println!("{} {}: Skipped ({})", "⊘".cyan(), patch_id, reason);
                     skipped += 1;
                 }
-                Ok(PatchResult::Failed { ref file, ref reason }) => {
+                Ok(PatchResult::Failed {
+                    ref file,
+                    ref reason,
+                }) => {
                     eprintln!("{} {}: MISMATCH", "✗".red(), patch_id);
                     eprintln!("  Error: {}", reason);
                     eprintln!("  Location: {}", file.display());

@@ -3,8 +3,8 @@
 //! Tests version filtering, idempotency checks, and full patch application
 
 use codex_patcher::config::{
-    apply_patches, load_from_str, ApplicationError, HashAlgorithm, Metadata, Operation,
-    PatchConfig, PatchDefinition, PatchResult, Query, Verify,
+    apply_patches, load_from_path, load_from_str, ApplicationError, HashAlgorithm, Metadata,
+    Operation, PatchConfig, PatchDefinition, PatchResult, Query, Verify,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -140,7 +140,11 @@ expected = "0x1234567890abcdef"
     let config = load_from_str(toml).expect("Failed to parse config");
     assert_eq!(config.patches.len(), 1);
 
-    if let Some(Verify::Hash { algorithm, expected }) = &config.patches[0].verify {
+    if let Some(Verify::Hash {
+        algorithm,
+        expected,
+    }) = &config.patches[0].verify
+    {
         assert_eq!(*algorithm, Some(HashAlgorithm::Xxh3));
         assert_eq!(expected, "0x1234567890abcdef");
     } else {
@@ -363,6 +367,87 @@ text = "fn test() { }"
 }
 
 #[test]
+fn test_validation_rejects_text_delete_combo() {
+    let toml = r#"
+[meta]
+name = "invalid-combo"
+
+[[patches]]
+id = "text-delete"
+file = "test.rs"
+
+[patches.query]
+type = "text"
+search = "hello"
+
+[patches.operation]
+type = "delete"
+"#;
+
+    let result = load_from_str(toml);
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("query type 'text' does not support operation 'delete'"));
+}
+
+#[test]
+fn test_validation_rejects_toml_replace_combo() {
+    let toml = r#"
+[meta]
+name = "invalid-combo"
+
+[[patches]]
+id = "toml-replace"
+file = "Cargo.toml"
+
+[patches.query]
+type = "toml"
+section = "package"
+key = "name"
+
+[patches.operation]
+type = "replace"
+text = "name = \"patched\""
+"#;
+
+    let result = load_from_str(toml);
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("query type 'toml' does not support operation 'replace'"));
+}
+
+#[test]
+fn test_validation_rejects_ast_grep_replace_key_combo() {
+    let toml = r#"
+[meta]
+name = "invalid-combo"
+
+[[patches]]
+id = "ast-replace-key"
+file = "test.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = "fn test() {}"
+
+[patches.operation]
+type = "replace-key"
+new_key = "renamed"
+"#;
+
+    let result = load_from_str(toml);
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("query type 'ast-grep' does not support operation 'replace-key'"));
+}
+
+#[test]
 fn test_patch_result_display() {
     let applied = PatchResult::Applied {
         file: PathBuf::from("/tmp/test.rs"),
@@ -462,4 +547,63 @@ text = "fn b() { println!(\"b\"); }"
     assert_eq!(config.patches.len(), 2);
     assert_eq!(config.patches[0].id, "patch-1");
     assert_eq!(config.patches[1].id, "patch-2");
+}
+
+#[test]
+fn test_v099_ranges_against_v0100_alpha2() {
+    let patch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // Bounded 0.99-alpha ranges must NOT match 0.100 (upper bound blocks it).
+    let cases = [
+        ("patches/privacy-v0.99.toml", false),
+        ("patches/sandbox-metrics.toml", false),
+        ("patches/privacy-v0.105-alpha13.toml", false),
+    ];
+
+    for (relative, expected) in cases {
+        let config = load_from_path(patch_root.join(relative)).expect("patch file must load");
+        let compatible = codex_patcher::matches_requirement(
+            "0.100.0-alpha.2",
+            config.meta.version_range.as_deref(),
+        )
+        .expect("version range must parse");
+        assert_eq!(compatible, expected, "{relative}");
+    }
+}
+
+#[test]
+fn test_sandbox_metric_patch_ranges_are_mutually_exclusive() {
+    let patch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let patch_files = [
+        "patches/sandbox-metrics.toml",
+        "patches/privacy-v0.99.toml",
+        "patches/privacy-v0.105-alpha13.toml",
+    ];
+    let patch_configs: Vec<_> = patch_files
+        .iter()
+        .map(|relative| {
+            let config = load_from_path(patch_root.join(relative)).expect("patch file must load");
+            (relative.to_string(), config)
+        })
+        .collect();
+
+    for version in [
+        "0.99.0-alpha.11",
+        "0.99.0-alpha.14",
+        "0.99.0-alpha.18",
+        "0.99.0-alpha.23",
+        "0.100.0-alpha.2",
+        "0.105.0-alpha.13",
+    ] {
+        let compatible_count = patch_configs
+            .iter()
+            .filter(|(_, config)| {
+                codex_patcher::matches_requirement(version, config.meta.version_range.as_deref())
+                    .expect("version range must parse")
+            })
+            .count();
+        assert!(
+            compatible_count <= 1,
+            "version {version} matched {compatible_count} overlapping sandbox metric patch files"
+        );
+    }
 }

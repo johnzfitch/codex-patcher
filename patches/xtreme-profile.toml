@@ -3,7 +3,7 @@
 # =============================================================================
 # Uses the Meta/Google/Cloudflare production stack:
 # - Thin LTO (80% of fat LTO gains, 20% of build time)
-# - Parallel codegen (codegen-units=2)
+# - Single codegen unit for maximum optimization (matches upstream release)
 # - Symbols preserved for BOLT post-link optimization
 # - BOLT-ready with --emit-relocs support
 #
@@ -33,11 +33,11 @@ type = "append-section"
 text = '''
 
 # Injected by codex-patcher (xtreme-profile)
-# Modern 2025/2026 stack: thin LTO + parallel codegen + BOLT-ready
+# Modern 2025/2026 stack: thin LTO + single codegen unit + BOLT-ready
 [profile.xtreme]
 inherits = "release"
 lto = "thin"           # 80% of fat LTO gains, much faster builds
-codegen-units = 2      # Parallel codegen, minimal perf loss
+codegen-units = 1      # Single unit for maximum optimization
 opt-level = 3
 strip = "none"         # Keep symbols for BOLT/profiling
 debug = 1              # Debug info for profiling (no runtime cost)

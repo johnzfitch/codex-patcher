@@ -53,7 +53,10 @@ mod tests {
         let root = sg.root();
 
         // Anonymous variadic ($$$)
-        assert!(root.find("fn foo() { $$$ }").is_some(), "anonymous variadic");
+        assert!(
+            root.find("fn foo() { $$$ }").is_some(),
+            "anonymous variadic"
+        );
 
         // Captured variadic ($$$NAME)
         assert!(

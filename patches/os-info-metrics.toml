@@ -1,0 +1,64 @@
+# =============================================================================
+# OS INFO METRICS PATCH - Remove OS Fingerprinting from Telemetry
+# =============================================================================
+#
+# Commit f2ffc4e5 (0.99.0-alpha.1) added real OS type and version to metrics
+# resource attributes via the os_info crate. This enables device fingerprinting
+# when combined with existing auth_mode tags.
+#
+# This patch neutralizes os_resource_attributes() to return empty, preventing
+# OS type (e.g., "Arch Linux") and version (e.g., "6.18.3-arch1-1") from
+# being sent to the telemetry endpoint.
+#
+# Affected files:
+# - codex-rs/otel/src/metrics/client.rs: os_resource_attributes() function
+#
+# Version: Targets Codex rust-v0.99.0-alpha.1 and later
+# =============================================================================
+
+[meta]
+name = "os-info-metrics"
+description = "Remove OS type/version fingerprinting from metrics resource attributes"
+version_range = ">=0.99.0-alpha.1"
+workspace_relative = true
+
+# =============================================================================
+# Patch 1: Neutralize os_resource_attributes to return empty vec
+# =============================================================================
+# The function collects os_info::get().os_type() and os_info::get().version()
+# and attaches them as "os" and "os_version" resource attributes to all metrics.
+# We replace it to return an empty vec so no OS info is transmitted.
+
+[[patches]]
+id = "neutralize-os-resource-attributes"
+file = "otel/src/metrics/client.rs"
+
+[patches.query]
+type = "text"
+search = '''
+fn os_resource_attributes() -> Vec<KeyValue> {
+    let os_info = os_info::get();
+    let os_type_raw = os_info.os_type().to_string();
+    let os_type = sanitize_metric_tag_value(os_type_raw.as_str());
+    let os_version_raw = os_info.version().to_string();
+    let os_version = sanitize_metric_tag_value(os_version_raw.as_str());
+    let mut attributes = Vec::new();
+    if os_type != "unspecified" {
+        attributes.push(KeyValue::new("os", os_type));
+    }
+    if os_version != "unspecified" {
+        attributes.push(KeyValue::new("os_version", os_version));
+    }
+    attributes
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+fn os_resource_attributes() -> Vec<KeyValue> {
+    // PRIVACY PATCH: Return empty to prevent OS fingerprinting via telemetry
+    // Original collected os_info::get().os_type() and .version() as resource attributes
+    Vec::new()
+}
+'''

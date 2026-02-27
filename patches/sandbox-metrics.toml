@@ -1,0 +1,58 @@
+# =============================================================================
+# SANDBOX METRICS PATCH - Remove Sandbox Info from Tool Call Metrics
+# =============================================================================
+#
+# Commit 901d5b8f (0.99.0-alpha.2) added sandbox and sandbox_policy tags to
+# every codex.tool.call metric. This leaks the user's security posture
+# (sandbox implementation and policy) to the telemetry endpoint.
+#
+# This patch strips the sandbox-related tags from tool call metrics by
+# replacing the metric_tags construction with empty tags.
+#
+# Affected files:
+# - codex-rs/core/src/tools/registry.rs: metric_tags in tool execution
+#
+# Version: Targets Codex rust-v0.99.0-alpha.2 and later
+# =============================================================================
+
+[meta]
+name = "sandbox-metrics"
+description = "Remove sandbox implementation and policy tags from tool call metrics"
+version_range = ">=0.99.0-alpha.2, <0.99.0-alpha.10"
+workspace_relative = true
+
+# =============================================================================
+# Patch 1: Strip sandbox tags from tool call metric_tags
+# =============================================================================
+# The tool registry builds metric_tags with sandbox type and sandbox_policy
+# for every tool invocation. We replace with empty tags.
+
+[[patches]]
+id = "strip-sandbox-metric-tags"
+file = "core/src/tools/registry.rs"
+
+[patches.query]
+type = "text"
+search = '''
+        let metric_tags = [
+            (
+                "sandbox",
+                sandbox_tag(
+                    &invocation.turn.sandbox_policy,
+                    invocation.turn.windows_sandbox_level,
+                ),
+            ),
+            (
+                "sandbox_policy",
+                sandbox_policy_tag(&invocation.turn.sandbox_policy),
+            ),
+        ];
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+        // PRIVACY PATCH: Removed sandbox and sandbox_policy tags from tool call metrics
+        // Original leaked sandbox implementation type and policy to telemetry endpoint
+        let metric_tags: [(&str, &str); 0] = [];
+'''

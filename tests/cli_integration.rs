@@ -217,6 +217,28 @@ fn test_status_command() {
 }
 
 #[test]
+fn test_status_is_read_only() {
+    let workspace = setup_test_workspace();
+    let original = fs::read_to_string(workspace.path().join("test.rs")).unwrap();
+
+    let output = Command::new("cargo")
+        .args([
+            "run",
+            "--quiet",
+            "--",
+            "status",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let after = fs::read_to_string(workspace.path().join("test.rs")).unwrap();
+    assert_eq!(after, original, "status command must not modify workspace");
+}
+
+#[test]
 fn test_verify_command() {
     let workspace = setup_test_workspace();
 
@@ -250,6 +272,30 @@ fn test_verify_command() {
     // Check that verify command runs
     assert!(stdout.contains("Verifying patches"));
     assert!(stdout.contains("Summary:"));
+}
+
+#[test]
+fn test_verify_is_read_only_on_mismatch() {
+    let workspace = setup_test_workspace();
+    let original = fs::read_to_string(workspace.path().join("test.rs")).unwrap();
+
+    let output = Command::new("cargo")
+        .args([
+            "run",
+            "--quiet",
+            "--",
+            "verify",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    // Fresh workspace should report mismatch because the patch is not yet applied.
+    assert!(!output.status.success());
+
+    let after = fs::read_to_string(workspace.path().join("test.rs")).unwrap();
+    assert_eq!(after, original, "verify command must not modify workspace");
 }
 
 #[test]

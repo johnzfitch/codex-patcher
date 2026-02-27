@@ -1,0 +1,251 @@
+# =============================================================================
+# TIMING LOOPS - Replace polling with event-driven waits
+# =============================================================================
+#
+# This patch set removes a handful of unnecessary timing loops in Codex:
+# - app-server: Replace 50ms shutdown polling with watch-driven waiting
+# - utils/pty: Replace WouldBlock+sleep spin with poll()-based readiness (Unix)
+# - tui: Replace commit animation background thread with Tokio interval (when available)
+#
+# Version: Targets Codex rust-v0.99.0-alpha.9 and later
+# =============================================================================
+
+[meta]
+name = "timing-loops"
+description = "Replace polling loops with event-driven waiting (shutdown, PTY, commit animation)"
+version_range = ">=0.99.0-alpha.0"
+workspace_relative = true
+
+# =============================================================================
+# Patch 1: Expose CodexThread status watch receiver for non-core crates
+# =============================================================================
+
+[[patches]]
+id = "codexthread-subscribe-status-public"
+file = "core/src/codex_thread.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    pub(crate) fn subscribe_status(&self) -> watch::Receiver<AgentStatus> {
+        self.codex.agent_status.clone()
+    }
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    pub fn subscribe_status(&self) -> watch::Receiver<AgentStatus> {
+        self.codex.agent_status.clone()
+    }
+'''
+
+# =============================================================================
+# Patch 2: app-server archive thread shutdown wait (watch, not polling)
+# =============================================================================
+
+[[patches]]
+id = "app-server-archive-wait-for-shutdown-watch"
+file = "app-server/src/codex_message_processor.rs"
+
+[patches.query]
+type = "text"
+search = '''
+                    // Poll agent status rather than consuming events so attached listeners do not block shutdown.
+                    let wait_for_shutdown = async {
+                        loop {
+                            if matches!(conversation.agent_status().await, AgentStatus::Shutdown) {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                    };
+                    if tokio::time::timeout(Duration::from_secs(10), wait_for_shutdown)
+                        .await
+                        .is_err()
+                    {
+                        warn!("thread {thread_id} shutdown timed out; proceeding with archive");
+                    }
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+                    // Wait on status updates rather than consuming events so attached listeners do not block shutdown.
+                    let mut status_rx = conversation.subscribe_status();
+                    let wait_for_shutdown = async move {
+                        if matches!(&*status_rx.borrow(), &AgentStatus::Shutdown) {
+                            return;
+                        }
+                        while status_rx.changed().await.is_ok() {
+                            if matches!(&*status_rx.borrow(), &AgentStatus::Shutdown) {
+                                break;
+                            }
+                        }
+                    };
+                    if tokio::time::timeout(Duration::from_secs(10), wait_for_shutdown)
+                        .await
+                        .is_err()
+                    {
+                        warn!("thread {thread_id} shutdown timed out; proceeding with archive");
+                    }
+'''
+
+# =============================================================================
+# Patch 3: PTY reader WouldBlock handling (poll readable instead of sleep spin)
+# =============================================================================
+
+[[patches]]
+id = "pty-reader-wouldblock-poll-readable"
+file = "utils/pty/src/pty.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    let mut reader = pair.master.try_clone_reader()?;
+    let output_tx_clone = output_tx.clone();
+    let reader_handle: JoinHandle<()> = tokio::task::spawn_blocking(move || {
+        let mut buf = [0u8; 8_192];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let _ = output_tx_clone.send(buf[..n].to_vec());
+                }
+                Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(_) => break,
+            }
+        }
+    });
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    #[cfg(unix)]
+    let master_fd = pair.master.as_raw_fd();
+    #[cfg(not(unix))]
+    let master_fd: Option<i32> = None;
+
+    let mut reader = pair.master.try_clone_reader()?;
+    let output_tx_clone = output_tx.clone();
+    let reader_handle: JoinHandle<()> = tokio::task::spawn_blocking(move || {
+        let mut buf = [0u8; 8_192];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let _ = output_tx_clone.send(buf[..n].to_vec());
+                }
+                Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                    if let Some(fd) = master_fd {
+                        let mut poll_failed = false;
+                        #[cfg(unix)]
+                        {
+                            // Block until the PTY is readable, avoiding a tight WouldBlock + sleep loop.
+                            let mut fds = [libc::pollfd {
+                                fd,
+                                events: (libc::POLLIN | libc::POLLHUP | libc::POLLERR) as i16,
+                                revents: 0,
+                            }];
+                            loop {
+                                let rc = unsafe {
+                                    libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1)
+                                };
+                                if rc > 0 {
+                                    break;
+                                }
+                                if rc == 0 {
+                                    continue;
+                                }
+                                let err = std::io::Error::last_os_error();
+                                if err.kind() == ErrorKind::Interrupted {
+                                    continue;
+                                }
+                                poll_failed = true;
+                                break;
+                            }
+                        }
+                        if poll_failed {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        continue;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(_) => break,
+            }
+        }
+    });
+'''
+
+# =============================================================================
+# Patch 4: Commit animation ticker (Tokio interval when runtime exists)
+# =============================================================================
+
+[[patches]]
+id = "tui-commit-animation-tokio-interval"
+file = "tui/src/app.rs"
+
+[patches.query]
+type = "text"
+search = '''
+            AppEvent::StartCommitAnimation => {
+                if self
+                    .commit_anim_running
+                    .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    let tx = self.app_event_tx.clone();
+                    let running = self.commit_anim_running.clone();
+                    thread::spawn(move || {
+                        while running.load(Ordering::Relaxed) {
+                            thread::sleep(COMMIT_ANIMATION_TICK);
+                            tx.send(AppEvent::CommitTick);
+                        }
+                    });
+                }
+            }
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+            AppEvent::StartCommitAnimation => {
+                if self
+                    .commit_anim_running
+                    .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    let tx = self.app_event_tx.clone();
+                    let running = self.commit_anim_running.clone();
+
+                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                        handle.spawn(async move {
+                            let mut interval = tokio::time::interval(COMMIT_ANIMATION_TICK);
+                            // tokio's interval ticks immediately once; consume that so we don't
+                            // double-tick on startup.
+                            interval.tick().await;
+
+                            while running.load(Ordering::Relaxed) {
+                                interval.tick().await;
+                                tx.send(AppEvent::CommitTick);
+                            }
+                        });
+                    } else {
+                        thread::spawn(move || {
+                            while running.load(Ordering::Relaxed) {
+                                thread::sleep(COMMIT_ANIMATION_TICK);
+                                tx.send(AppEvent::CommitTick);
+                            }
+                        });
+                    }
+                }
+            }
+'''

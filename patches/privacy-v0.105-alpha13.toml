@@ -1,0 +1,2170 @@
+# =============================================================================
+# PRIVACY PATCHES (v0.105.0-alpha.13 and later)
+# =============================================================================
+#
+# Privacy hardening for codex-rs 0.105.x and later.
+# No upper bound — applies to all future versions until a patch fails to match,
+# at which point a new versioned file should be added alongside this one.
+#
+# Originally written against 0.105.x:
+# - Remove realtime runtime-text mirroring of normal turn activity.
+# - Disable turn metadata transport over HTTP and websocket payload metadata.
+# - Convert turn metadata internals to no-op behavior.
+# - Disable app/skill analytics network emission (no-network sink behavior).
+# - Remove realtime websocket override config behavior.
+# - Force non-login shell behavior and ignore allow_login_shell enable attempts.
+# - Disable LOG_FORMAT env-based log format switching in app-server.
+# - Ignore externally supplied zsh wrapper socket path and tighten wrapper mode gating.
+# - Stop exporting legacy BASH_EXEC_WRAPPER compatibility alias.
+# - Remove CODEX_APP_SERVER_URL env override from app-server test client.
+# - Enforce loopback-only MCP OAuth callback binding and callback URL hosts.
+# - Remove external_logos query behavior from connector directory requests.
+# - Update affected tests to match privacy-hardened behavior.
+#
+# =============================================================================
+
+[meta]
+name = "privacy-patches-v0.105-alpha13"
+description = "Privacy hardening for 0.105.0-alpha.13+: disable realtime mirroring/metadata/analytics, force non-login shell, disable selected env overrides, enforce loopback-only OAuth callbacks, and remove external logos query"
+version_range = ">=0.105.0-alpha.13"
+workspace_relative = true
+
+# =============================================================================
+# Realtime runtime-text mirroring removal (core/src/codex.rs)
+# =============================================================================
+
+[[patches]]
+id = "privacy-v0.105-remove-patch-apply-status-import"
+file = "core/src/codex.rs"
+
+[patches.query]
+type = "text"
+search = "use crate::protocol::PatchApplyStatus;\n"
+
+[patches.operation]
+type = "replace"
+text = "// PRIVACY PATCH: PatchApplyStatus import removed with realtime mirroring.\n"
+
+[[patches]]
+id = "privacy-v0.105-remove-send-event-realtime-mirror-call"
+file = "core/src/codex.rs"
+
+[patches.query]
+type = "text"
+search = '''
+        self.send_event_raw(event).await;
+        self.maybe_mirror_event_text_to_realtime(&legacy_source)
+            .await;
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+        self.send_event_raw(event).await;
+'''
+
+[[patches]]
+id = "privacy-v0.105-remove-maybe-mirror-helper"
+file = "core/src/codex.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    async fn maybe_mirror_event_text_to_realtime(&self, msg: &EventMsg) {
+        let Some(text) = realtime_text_for_event(msg) else {
+            return;
+        };
+        if self.conversation.running_state().await.is_none() {
+            return;
+        }
+        if let Err(err) = self.conversation.text_in(text).await {
+            debug!("failed to mirror event text to realtime conversation: {err}");
+        }
+    }
+
+'''
+
+[patches.operation]
+type = "replace"
+text = "// PRIVACY PATCH: Removed runtime event-text mirroring helper.\n"
+
+[[patches]]
+id = "privacy-v0.105-remove-realtime-text-for-event-helper"
+file = "core/src/codex.rs"
+
+[patches.query]
+type = "text"
+search = '''
+fn realtime_text_for_event(msg: &EventMsg) -> Option<String> {
+    match msg {
+        EventMsg::AgentMessage(event) => Some(event.message.clone()),
+        EventMsg::ItemCompleted(event) => match &event.item {
+            TurnItem::AgentMessage(item) => Some(agent_message_text(item)),
+            _ => None,
+        },
+        EventMsg::ExecCommandBegin(event) => {
+            let command = event.command.join(" ");
+            Some(format!(
+                "Exec command started: {command}\nWorking directory: {}",
+                event.cwd.display()
+            ))
+        }
+        EventMsg::PatchApplyBegin(event) => {
+            let mut files: Vec<String> = event
+                .changes
+                .keys()
+                .map(|path| path.display().to_string())
+                .collect();
+            files.sort();
+            let file_list = if files.is_empty() {
+                "none".to_string()
+            } else {
+                files.join(", ")
+            };
+            Some(format!(
+                "apply_patch started ({count} file change(s))\nFiles: {file_list}",
+                count = files.len()
+            ))
+        }
+        EventMsg::PatchApplyEnd(event) => {
+            let status = match event.status {
+                PatchApplyStatus::Completed => "completed",
+                PatchApplyStatus::Failed => "failed",
+                PatchApplyStatus::Declined => "declined",
+            };
+            let mut text = format!("apply_patch {status}");
+            if !event.stdout.is_empty() {
+                text.push_str(&format!("\nstdout:\n{}", event.stdout));
+            }
+            if !event.stderr.is_empty() {
+                text.push_str(&format!("\nstderr:\n{}", event.stderr));
+            }
+            Some(text)
+        }
+        _ => None,
+    }
+}
+
+'''
+
+[patches.operation]
+type = "replace"
+text = "// PRIVACY PATCH: Removed realtime event text mapping helper.\n"
+
+# =============================================================================
+# Turn metadata transport removal (core/src/client.rs, core/src/lib.rs)
+# =============================================================================
+
+[[patches]]
+id = "privacy-v0.105-remove-turn-metadata-header-constant"
+file = "core/src/client.rs"
+
+[patches.query]
+type = "text"
+search = "pub const X_CODEX_TURN_METADATA_HEADER: &str = \"x-codex-turn-metadata\";\n"
+
+[patches.operation]
+type = "replace"
+text = "// PRIVACY PATCH: Turn metadata header constant disabled.\n"
+
+[[patches]]
+id = "privacy-v0.105-parse-turn-metadata-header-always-none"
+file = "core/src/client.rs"
+
+[patches.query]
+type = "text"
+search = '''
+fn parse_turn_metadata_header(turn_metadata_header: Option<&str>) -> Option<HeaderValue> {
+    turn_metadata_header.and_then(|value| HeaderValue::from_str(value).ok())
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+fn parse_turn_metadata_header(_turn_metadata_header: Option<&str>) -> Option<HeaderValue> {
+    None
+}
+'''
+
+[[patches]]
+id = "privacy-v0.105-ws-client-metadata-disabled"
+file = "core/src/client.rs"
+
+[patches.query]
+type = "text"
+search = '''
+fn build_ws_client_metadata(turn_metadata_header: Option<&str>) -> Option<HashMap<String, String>> {
+    let turn_metadata_header = parse_turn_metadata_header(turn_metadata_header)?;
+    let turn_metadata = turn_metadata_header.to_str().ok()?.to_string();
+    let mut client_metadata = HashMap::new();
+    client_metadata.insert(X_CODEX_TURN_METADATA_HEADER.to_string(), turn_metadata);
+    Some(client_metadata)
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+fn build_ws_client_metadata(_turn_metadata_header: Option<&str>) -> Option<HashMap<String, String>> {
+    None
+}
+'''
+
+[[patches]]
+id = "privacy-v0.105-disable-http-turn-metadata-header-insertion"
+file = "core/src/client.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    if let Some(header_value) = turn_metadata_header {
+        headers.insert(X_CODEX_TURN_METADATA_HEADER, header_value.clone());
+    }
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    let _ = turn_metadata_header;
+'''
+
+[[patches]]
+id = "privacy-v0.105-remove-lib-reexport-turn-metadata-header-constant"
+file = "core/src/lib.rs"
+
+[patches.query]
+type = "text"
+search = "pub use client::X_CODEX_TURN_METADATA_HEADER;\n"
+
+[patches.operation]
+type = "replace"
+text = "// PRIVACY PATCH: Removed public turn metadata header re-export.\n"
+
+# =============================================================================
+# Turn metadata internals no-op (core/src/turn_metadata.rs)
+# =============================================================================
+
+[[patches]]
+id = "privacy-v0.105-build-turn-metadata-header-noop"
+file = "core/src/turn_metadata.rs"
+
+[patches.query]
+type = "text"
+search = '''
+pub async fn build_turn_metadata_header(cwd: &Path, sandbox: Option<&str>) -> Option<String> {
+    let repo_root = get_git_repo_root(cwd).map(|root| root.to_string_lossy().into_owned());
+
+    let (latest_git_commit_hash, associated_remote_urls, has_changes) = tokio::join!(
+        get_head_commit_hash(cwd),
+        get_git_remote_urls_assume_git_repo(cwd),
+        get_has_changes(cwd),
+    );
+    if latest_git_commit_hash.is_none()
+        && associated_remote_urls.is_none()
+        && has_changes.is_none()
+        && sandbox.is_none()
+    {
+        return None;
+    }
+
+    build_turn_metadata_bag(
+        None,
+        sandbox.map(ToString::to_string),
+        repo_root,
+        Some(WorkspaceGitMetadata {
+            associated_remote_urls,
+            latest_git_commit_hash,
+            has_changes,
+        }),
+    )
+    .to_header_value()
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub async fn build_turn_metadata_header(_cwd: &Path, _sandbox: Option<&str>) -> Option<String> {
+    // PRIVACY PATCH: Disable per-turn metadata headers.
+    None
+}
+'''
+
+[[patches]]
+id = "privacy-v0.105-turn-metadata-state-current-header-always-none"
+file = "core/src/turn_metadata.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    pub(crate) fn current_header_value(&self) -> Option<String> {
+        if let Some(header) = self
+            .enriched_header
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned()
+        {
+            return Some(header);
+        }
+        Some(self.base_header.clone())
+    }
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    pub(crate) fn current_header_value(&self) -> Option<String> {
+        None
+    }
+'''
+
+[[patches]]
+id = "privacy-v0.105-turn-metadata-state-disable-enrichment"
+file = "core/src/turn_metadata.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    pub(crate) fn spawn_git_enrichment_task(&self) {
+        if self.repo_root.is_none() {
+            return;
+        }
+
+        let mut task_guard = self
+            .enrichment_task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if task_guard.is_some() {
+            return;
+        }
+
+        let state = self.clone();
+        *task_guard = Some(tokio::spawn(async move {
+            let workspace_git_metadata = state.fetch_workspace_git_metadata().await;
+            let Some(repo_root) = state.repo_root.clone() else {
+                return;
+            };
+
+            let enriched_metadata = build_turn_metadata_bag(
+                state.base_metadata.turn_id.clone(),
+                state.base_metadata.sandbox.clone(),
+                Some(repo_root),
+                Some(workspace_git_metadata),
+            );
+            if enriched_metadata.workspaces.is_empty() {
+                return;
+            }
+
+            if let Some(header_value) = enriched_metadata.to_header_value() {
+                *state
+                    .enriched_header
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(header_value);
+            }
+        }));
+    }
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    pub(crate) fn spawn_git_enrichment_task(&self) {
+        // PRIVACY PATCH: Disable enrichment task; metadata transport is disabled.
+    }
+'''
+
+[[patches]]
+id = "privacy-v0.105-turn-metadata-test-header-disabled"
+file = "core/src/turn_metadata.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    #[tokio::test]
+    async fn build_turn_metadata_header_includes_has_changes_for_clean_repo() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).expect("create repo");
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&repo_path)
+            .output()
+            .await
+            .expect("git init");
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&repo_path)
+            .output()
+            .await
+            .expect("git config user.name");
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&repo_path)
+            .output()
+            .await
+            .expect("git config user.email");
+
+        std::fs::write(repo_path.join("README.md"), "hello").expect("write file");
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo_path)
+            .output()
+            .await
+            .expect("git add");
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&repo_path)
+            .output()
+            .await
+            .expect("git commit");
+
+        let header = build_turn_metadata_header(&repo_path, Some("none"))
+            .await
+            .expect("header");
+        let parsed: Value = serde_json::from_str(&header).expect("valid json");
+        let workspace = parsed
+            .get("workspaces")
+            .and_then(Value::as_object)
+            .and_then(|workspaces| workspaces.values().next())
+            .cloned()
+            .expect("workspace");
+
+        assert_eq!(
+            workspace.get("has_changes").and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    #[tokio::test]
+    async fn build_turn_metadata_header_returns_none() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).expect("create repo");
+
+        let header = build_turn_metadata_header(&repo_path, Some("none")).await;
+        assert_eq!(header, None);
+    }
+'''
+
+[[patches]]
+id = "privacy-v0.105-turn-metadata-state-test-disabled"
+file = "core/src/turn_metadata.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    #[test]
+    fn turn_metadata_state_respects_linux_bubblewrap_toggle() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let cwd = temp_dir.path().to_path_buf();
+        let sandbox_policy = SandboxPolicy::new_read_only_policy();
+
+        let without_bubblewrap = TurnMetadataState::new(
+            "turn-a".to_string(),
+            cwd.clone(),
+            &sandbox_policy,
+            WindowsSandboxLevel::Disabled,
+            false,
+        );
+        let with_bubblewrap = TurnMetadataState::new(
+            "turn-b".to_string(),
+            cwd,
+            &sandbox_policy,
+            WindowsSandboxLevel::Disabled,
+            true,
+        );
+
+        let without_bubblewrap_header = without_bubblewrap
+            .current_header_value()
+            .expect("without_bubblewrap_header");
+        let with_bubblewrap_header = with_bubblewrap
+            .current_header_value()
+            .expect("with_bubblewrap_header");
+
+        let without_bubblewrap_json: Value =
+            serde_json::from_str(&without_bubblewrap_header).expect("without_bubblewrap_json");
+        let with_bubblewrap_json: Value =
+            serde_json::from_str(&with_bubblewrap_header).expect("with_bubblewrap_json");
+
+        let without_bubblewrap_sandbox = without_bubblewrap_json
+            .get("sandbox")
+            .and_then(Value::as_str);
+        let with_bubblewrap_sandbox = with_bubblewrap_json.get("sandbox").and_then(Value::as_str);
+
+        let expected_with_bubblewrap =
+            sandbox_tag(&sandbox_policy, WindowsSandboxLevel::Disabled, true);
+        assert_eq!(with_bubblewrap_sandbox, Some(expected_with_bubblewrap));
+
+        if cfg!(target_os = "linux") {
+            assert_eq!(with_bubblewrap_sandbox, Some("linux_bubblewrap"));
+            assert_ne!(with_bubblewrap_sandbox, without_bubblewrap_sandbox);
+        }
+    }
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    #[test]
+    fn turn_metadata_state_header_is_disabled() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let cwd = temp_dir.path().to_path_buf();
+        let sandbox_policy = SandboxPolicy::new_read_only_policy();
+
+        let state = TurnMetadataState::new(
+            "turn-a".to_string(),
+            cwd,
+            &sandbox_policy,
+            WindowsSandboxLevel::Disabled,
+            false,
+        );
+
+        assert_eq!(state.current_header_value(), None);
+    }
+'''
+
+# =============================================================================
+# Analytics no-network sink + MCP app-used hook removal
+# =============================================================================
+
+[[patches]]
+id = "privacy-v0.105-analytics-track-skill-noop"
+file = "core/src/analytics_client.rs"
+
+[patches.query]
+type = "text"
+search = '''
+pub(crate) fn track_skill_invocations(
+    queue: &AnalyticsEventsQueue,
+    config: Arc<Config>,
+    tracking: Option<TrackEventsContext>,
+    invocations: Vec<SkillInvocation>,
+) {
+    if config.analytics_enabled == Some(false) {
+        return;
+    }
+    let Some(tracking) = tracking else {
+        return;
+    };
+    if invocations.is_empty() {
+        return;
+    }
+    let job = TrackEventsJob::SkillInvocations(TrackSkillInvocationsJob {
+        config,
+        tracking,
+        invocations,
+    });
+    queue.try_send(job);
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub(crate) fn track_skill_invocations(
+    queue: &AnalyticsEventsQueue,
+    config: Arc<Config>,
+    tracking: Option<TrackEventsContext>,
+    invocations: Vec<SkillInvocation>,
+) {
+    let _ = (queue, config, tracking, invocations);
+}
+'''
+
+[[patches]]
+id = "privacy-v0.105-analytics-track-app-mentioned-noop"
+file = "core/src/analytics_client.rs"
+
+[patches.query]
+type = "text"
+search = '''
+pub(crate) fn track_app_mentioned(
+    queue: &AnalyticsEventsQueue,
+    config: Arc<Config>,
+    tracking: Option<TrackEventsContext>,
+    mentions: Vec<AppInvocation>,
+) {
+    if config.analytics_enabled == Some(false) {
+        return;
+    }
+    let Some(tracking) = tracking else {
+        return;
+    };
+    if mentions.is_empty() {
+        return;
+    }
+    let job = TrackEventsJob::AppMentioned(TrackAppMentionedJob {
+        config,
+        tracking,
+        mentions,
+    });
+    queue.try_send(job);
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub(crate) fn track_app_mentioned(
+    queue: &AnalyticsEventsQueue,
+    config: Arc<Config>,
+    tracking: Option<TrackEventsContext>,
+    mentions: Vec<AppInvocation>,
+) {
+    let _ = (queue, config, tracking, mentions);
+}
+'''
+
+[[patches]]
+id = "privacy-v0.105-analytics-track-app-used-noop"
+file = "core/src/analytics_client.rs"
+
+[patches.query]
+type = "text"
+search = '''
+pub(crate) fn track_app_used(
+    queue: &AnalyticsEventsQueue,
+    config: Arc<Config>,
+    tracking: Option<TrackEventsContext>,
+    app: AppInvocation,
+) {
+    if config.analytics_enabled == Some(false) {
+        return;
+    }
+    let Some(tracking) = tracking else {
+        return;
+    };
+    if !queue.should_enqueue_app_used(&tracking, &app) {
+        return;
+    }
+    let job = TrackEventsJob::AppUsed(TrackAppUsedJob {
+        config,
+        tracking,
+        app,
+    });
+    queue.try_send(job);
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub(crate) fn track_app_used(
+    queue: &AnalyticsEventsQueue,
+    config: Arc<Config>,
+    tracking: Option<TrackEventsContext>,
+    app: AppInvocation,
+) {
+    let _ = (queue, config, tracking, app);
+}
+'''
+
+[[patches]]
+id = "privacy-v0.105-remove-mcp-app-used-analytics-imports"
+file = "core/src/mcp_tool_call.rs"
+
+[patches.query]
+type = "text"
+search = '''
+use crate::analytics_client::AppInvocation;
+use crate::analytics_client::build_track_events_context;
+'''
+
+[patches.operation]
+type = "replace"
+text = "// PRIVACY PATCH: Removed app-used analytics imports.\n"
+
+[[patches]]
+id = "privacy-v0.105-remove-mcp-app-used-analytics-call-approval-branch"
+file = "core/src/mcp_tool_call.rs"
+
+[patches.query]
+type = "text"
+search = "                maybe_track_codex_app_used(sess.as_ref(), turn_context, &server, &tool_name).await;\n"
+
+[patches.operation]
+type = "replace"
+text = "                // PRIVACY PATCH: Removed app-used analytics tracking hook.\n"
+
+[[patches]]
+id = "privacy-v0.105-remove-mcp-app-used-analytics-call-default-branch"
+file = "core/src/mcp_tool_call.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    notify_mcp_tool_call_event(sess.as_ref(), turn_context, tool_call_end_event.clone()).await;
+    maybe_track_codex_app_used(sess.as_ref(), turn_context, &server, &tool_name).await;
+
+    let status = if result.is_ok() { "ok" } else { "error" };
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    notify_mcp_tool_call_event(sess.as_ref(), turn_context, tool_call_end_event.clone()).await;
+
+    let status = if result.is_ok() { "ok" } else { "error" };
+'''
+
+[[patches]]
+id = "privacy-v0.105-mcp-app-used-helper-noop"
+file = "core/src/mcp_tool_call.rs"
+
+[patches.query]
+type = "text"
+search = '''
+async fn maybe_track_codex_app_used(
+    sess: &Session,
+    turn_context: &TurnContext,
+    server: &str,
+    tool_name: &str,
+) {
+    if server != CODEX_APPS_MCP_SERVER_NAME {
+        return;
+    }
+    let metadata = lookup_mcp_app_usage_metadata(sess, server, tool_name).await;
+    let (connector_id, app_name) = metadata
+        .map(|metadata| (metadata.connector_id, metadata.app_name))
+        .unwrap_or((None, None));
+    let invoke_type = if let Some(connector_id) = connector_id.as_deref() {
+        let mentioned_connector_ids = sess.get_connector_selection().await;
+        if mentioned_connector_ids.contains(connector_id) {
+            "explicit"
+        } else {
+            "implicit"
+        }
+    } else {
+        "implicit"
+    };
+
+    let tracking = build_track_events_context(
+        turn_context.model_info.slug.clone(),
+        sess.conversation_id.to_string(),
+        turn_context.sub_id.clone(),
+    );
+    sess.services.analytics_events_client.track_app_used(
+        tracking,
+        AppInvocation {
+            connector_id,
+            app_name,
+            invoke_type: Some(invoke_type.to_string()),
+        },
+    );
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+async fn maybe_track_codex_app_used(
+    sess: &Session,
+    turn_context: &TurnContext,
+    server: &str,
+    tool_name: &str,
+) {
+    let _ = (sess, turn_context, server, tool_name);
+}
+'''
+
+# =============================================================================
+# Realtime override removal (runtime + config)
+# =============================================================================
+
+[[patches]]
+id = "privacy-v0.105-realtime-handle-start-remove-provider-mutation"
+file = "core/src/realtime_conversation.rs"
+
+[patches.query]
+type = "text"
+search = "    let mut api_provider = provider.to_api_provider(auth.as_ref().map(CodexAuth::auth_mode))?;\n"
+
+[patches.operation]
+type = "replace"
+text = "    let api_provider = provider.to_api_provider(auth.as_ref().map(CodexAuth::auth_mode))?;\n"
+
+[[patches]]
+id = "privacy-v0.105-realtime-handle-start-remove-overrides"
+file = "core/src/realtime_conversation.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    let config = sess.get_config().await;
+    if let Some(realtime_ws_base_url) = &config.experimental_realtime_ws_base_url {
+        api_provider.base_url = realtime_ws_base_url.clone();
+    }
+    let prompt = config
+        .experimental_realtime_ws_backend_prompt
+        .clone()
+        .unwrap_or(params.prompt);
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    let _config = sess.get_config().await;
+    let prompt = params.prompt;
+'''
+
+[[patches]]
+id = "privacy-v0.105-config-toml-remove-realtime-override-keys"
+file = "core/src/config/mod.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    /// Base URL for requests to ChatGPT (as opposed to the OpenAI API).
+    pub chatgpt_base_url: Option<String>,
+
+    /// Experimental / do not use. Overrides only the realtime conversation
+    /// websocket transport base URL (the `Op::RealtimeConversation` `/ws`
+    /// connection) without changing normal provider HTTP requests.
+    pub experimental_realtime_ws_base_url: Option<String>,
+    /// Experimental / do not use. Overrides only the realtime conversation
+    /// websocket transport backend prompt (the `Op::RealtimeConversation`
+    /// `/ws` session.create backend_prompt) without changing normal prompts.
+    pub experimental_realtime_ws_backend_prompt: Option<String>,
+    pub projects: Option<HashMap<String, ProjectConfig>>,
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    /// Base URL for requests to ChatGPT (as opposed to the OpenAI API).
+    pub chatgpt_base_url: Option<String>,
+
+    // PRIVACY PATCH: Realtime websocket override keys removed from ConfigToml.
+    pub projects: Option<HashMap<String, ProjectConfig>>,
+'''
+
+[[patches]]
+id = "privacy-v0.105-config-load-realtime-overrides-force-none"
+file = "core/src/config/mod.rs"
+
+[patches.query]
+type = "text"
+search = '''
+            experimental_realtime_ws_base_url: cfg.experimental_realtime_ws_base_url,
+            experimental_realtime_ws_backend_prompt: cfg.experimental_realtime_ws_backend_prompt,
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+            experimental_realtime_ws_base_url: None,
+            experimental_realtime_ws_backend_prompt: None,
+'''
+
+[[patches]]
+id = "privacy-v0.105-config-tests-realtime-override-keys-ignored"
+file = "core/src/config/mod.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    #[test]
+    fn experimental_realtime_ws_base_url_loads_from_config_toml() -> std::io::Result<()> {
+        let cfg: ConfigToml = toml::from_str(
+            r#"
+experimental_realtime_ws_base_url = "http://127.0.0.1:8011"
+"#,
+        )
+        .expect("TOML deserialization should succeed");
+
+        assert_eq!(
+            cfg.experimental_realtime_ws_base_url.as_deref(),
+            Some("http://127.0.0.1:8011")
+        );
+
+        let codex_home = TempDir::new()?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(
+            config.experimental_realtime_ws_base_url.as_deref(),
+            Some("http://127.0.0.1:8011")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn experimental_realtime_ws_backend_prompt_loads_from_config_toml() -> std::io::Result<()> {
+        let cfg: ConfigToml = toml::from_str(
+            r#"
+experimental_realtime_ws_backend_prompt = "prompt from config"
+"#,
+        )
+        .expect("TOML deserialization should succeed");
+
+        assert_eq!(
+            cfg.experimental_realtime_ws_backend_prompt.as_deref(),
+            Some("prompt from config")
+        );
+
+        let codex_home = TempDir::new()?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(
+            config.experimental_realtime_ws_backend_prompt.as_deref(),
+            Some("prompt from config")
+        );
+        Ok(())
+    }
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    #[test]
+    fn legacy_realtime_ws_override_keys_have_no_effect() -> std::io::Result<()> {
+        let cfg: ConfigToml = toml::from_str(
+            r#"
+experimental_realtime_ws_base_url = "http://127.0.0.1:8011"
+experimental_realtime_ws_backend_prompt = "prompt from config"
+"#,
+        )
+        .expect("TOML deserialization should succeed");
+
+        let codex_home = TempDir::new()?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.experimental_realtime_ws_base_url, None);
+        assert_eq!(config.experimental_realtime_ws_backend_prompt, None);
+        Ok(())
+    }
+'''
+
+[[patches]]
+id = "privacy-v0.105-config-schema-remove-realtime-override-keys"
+file = "core/config.schema.json"
+
+[patches.query]
+type = "text"
+search = '''
+    "experimental_realtime_ws_backend_prompt": {
+      "description": "Experimental / do not use. Overrides only the realtime conversation websocket transport backend prompt (the `Op::RealtimeConversation` `/ws` session.create backend_prompt) without changing normal prompts.",
+      "type": "string"
+    },
+    "experimental_realtime_ws_base_url": {
+      "description": "Experimental / do not use. Overrides only the realtime conversation websocket transport base URL (the `Op::RealtimeConversation` `/ws` connection) without changing normal provider HTTP requests.",
+      "type": "string"
+    },
+'''
+
+[patches.operation]
+type = "replace"
+text = '''    "privacy_patch_realtime_ws_overrides_removed": {
+      "description": "PRIVACY PATCH: Legacy realtime websocket override keys were removed.",
+      "type": "boolean"
+    },
+'''
+
+# =============================================================================
+# Additional config + env hardening (shell/login + wrappers + app-server envs)
+# =============================================================================
+
+[[patches]]
+id = "privacy-v0.105-config-force-login-shell-disabled"
+file = "core/src/config/mod.rs"
+
+[patches.query]
+type = "text"
+search = "        let allow_login_shell = cfg.allow_login_shell.unwrap_or(true);\n"
+
+[patches.operation]
+type = "replace"
+text = "        let allow_login_shell = false;\n"
+
+[[patches]]
+id = "privacy-v0.105-config-test-allow-login-shell-key-ignored"
+file = "core/src/config/mod.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    #[test]
+    fn config_loads_allow_login_shell_from_toml() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg: ConfigToml = toml::from_str(
+            r#"
+model = "gpt-5.1"
+allow_login_shell = false
+"#,
+        )
+        .expect("TOML deserialization should succeed for allow_login_shell");
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert!(!config.permissions.allow_login_shell);
+        Ok(())
+    }
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    #[test]
+    fn config_ignores_allow_login_shell_and_keeps_login_shell_disabled() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg: ConfigToml = toml::from_str(
+            r#"
+model = "gpt-5.1"
+allow_login_shell = true
+"#,
+        )
+        .expect("TOML deserialization should succeed for allow_login_shell");
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert!(!config.permissions.allow_login_shell);
+        Ok(())
+    }
+'''
+
+[[patches]]
+id = "privacy-v0.105-app-server-log-format-env-ignored"
+file = "app-server/src/lib.rs"
+
+[patches.query]
+type = "text"
+search = '''
+fn log_format_from_env() -> LogFormat {
+    let value = std::env::var(LOG_FORMAT_ENV_VAR).ok();
+    LogFormat::from_env_value(value.as_deref())
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+fn log_format_from_env() -> LogFormat {
+    let _ = LOG_FORMAT_ENV_VAR;
+    LogFormat::Default
+}
+'''
+
+[[patches]]
+id = "privacy-v0.105-app-server-log-format-comment-update"
+file = "app-server/src/lib.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    // Install a simple subscriber so `tracing` output is visible. Users can
+    // control the log level with `RUST_LOG` and switch to JSON logs with
+    // `LOG_FORMAT=json`.
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    // Install a simple subscriber so `tracing` output is visible. Users can
+    // control the log level with `RUST_LOG`.
+    // PRIVACY PATCH: Ignore LOG_FORMAT env override and keep stderr logs in text format.
+'''
+
+[[patches]]
+id = "privacy-v0.105-zsh-wrapper-socket-env-ignored"
+file = "core/src/zsh_exec_bridge/mod.rs"
+
+[patches.query]
+type = "text"
+search = '''
+        let wrapper_socket_path = req
+            .env
+            .get(ZSH_EXEC_BRIDGE_WRAPPER_SOCKET_ENV_VAR)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.next_wrapper_socket_path());
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+        let wrapper_socket_path = self.next_wrapper_socket_path();
+'''
+
+[[patches]]
+id = "privacy-v0.105-zsh-wrapper-mode-requires-full-handshake-env"
+file = "core/src/zsh_exec_bridge/mod.rs"
+
+[patches.query]
+type = "text"
+search = '''
+pub fn maybe_run_zsh_exec_wrapper_mode() -> anyhow::Result<bool> {
+    if std::env::var_os(ZSH_EXEC_WRAPPER_MODE_ENV_VAR).is_none() {
+        return Ok(false);
+    }
+
+    run_exec_wrapper_mode()?;
+    Ok(true)
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub fn maybe_run_zsh_exec_wrapper_mode() -> anyhow::Result<bool> {
+    if std::env::var_os(ZSH_EXEC_WRAPPER_MODE_ENV_VAR).is_none() {
+        return Ok(false);
+    }
+    if std::env::var_os(ZSH_EXEC_BRIDGE_WRAPPER_SOCKET_ENV_VAR).is_none() {
+        return Ok(false);
+    }
+
+    #[cfg(not(unix))]
+    {
+        return Ok(false);
+    }
+
+    #[cfg(unix)]
+    if std::env::var_os(EXEC_WRAPPER_ENV_VAR).is_none() {
+        return Ok(false);
+    }
+
+    run_exec_wrapper_mode()?;
+    Ok(true)
+}
+'''
+
+[[patches]]
+id = "privacy-v0.105-remove-legacy-bash-exec-wrapper-export"
+file = "exec-server/src/posix/escalate_server.rs"
+
+[patches.query]
+type = "text"
+search = '''
+        env.insert(
+            LEGACY_BASH_EXEC_WRAPPER_ENV_VAR.to_string(),
+            self.execve_wrapper.to_string_lossy().to_string(),
+        );
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+        let _ = LEGACY_BASH_EXEC_WRAPPER_ENV_VAR;
+'''
+
+[[patches]]
+id = "privacy-v0.105-app-server-test-client-remove-url-env-override"
+file = "app-server-test-client/src/lib.rs"
+
+[patches.query]
+type = "text"
+search = '    #[arg(long, env = "CODEX_APP_SERVER_URL", global = true)]'
+
+[patches.operation]
+type = "replace"
+text = '    #[arg(long, global = true)]'
+
+# =============================================================================
+# OAuth callback hardening (rmcp-client/src/perform_oauth_login.rs)
+# =============================================================================
+
+[[patches]]
+id = "privacy-v0.105-oauth-add-loopback-host-helper"
+file = "rmcp-client/src/perform_oauth_login.rs"
+
+[patches.query]
+type = "text"
+search = '''
+fn resolve_callback_port(callback_port: Option<u16>) -> Result<Option<u16>> {
+    if let Some(config_port) = callback_port {
+        if config_port == 0 {
+            bail!(
+                "invalid MCP OAuth callback port `{config_port}`: port must be between 1 and 65535"
+            );
+        }
+        return Ok(Some(config_port));
+    }
+
+    Ok(None)
+}
+
+fn local_redirect_uri(server: &Server) -> Result<String> {
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+fn resolve_callback_port(callback_port: Option<u16>) -> Result<Option<u16>> {
+    if let Some(config_port) = callback_port {
+        if config_port == 0 {
+            bail!(
+                "invalid MCP OAuth callback port `{config_port}`: port must be between 1 and 65535"
+            );
+        }
+        return Ok(Some(config_port));
+    }
+
+    Ok(None)
+}
+
+fn is_loopback_callback_host(host: Option<&str>) -> bool {
+    matches!(host, Some("localhost" | "127.0.0.1" | "::1"))
+}
+
+fn local_redirect_uri(server: &Server) -> Result<String> {
+'''
+
+[[patches]]
+id = "privacy-v0.105-oauth-enforce-loopback-callback-url-host"
+file = "rmcp-client/src/perform_oauth_login.rs"
+
+[patches.query]
+type = "text"
+search = '''
+fn resolve_redirect_uri(server: &Server, callback_url: Option<&str>) -> Result<String> {
+    let Some(callback_url) = callback_url else {
+        return local_redirect_uri(server);
+    };
+    Url::parse(callback_url)
+        .with_context(|| format!("invalid MCP OAuth callback URL `{callback_url}`"))?;
+    Ok(callback_url.to_string())
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+fn resolve_redirect_uri(server: &Server, callback_url: Option<&str>) -> Result<String> {
+    let Some(callback_url) = callback_url else {
+        return local_redirect_uri(server);
+    };
+    let parsed = Url::parse(callback_url)
+        .with_context(|| format!("invalid MCP OAuth callback URL `{callback_url}`"))?;
+    if !is_loopback_callback_host(parsed.host_str()) {
+        bail!(
+            "invalid MCP OAuth callback URL `{callback_url}`: host must be loopback (localhost, 127.0.0.1, or ::1)"
+        );
+    }
+    Ok(callback_url.to_string())
+}
+'''
+
+[[patches]]
+id = "privacy-v0.105-oauth-loopback-bind-host-only"
+file = "rmcp-client/src/perform_oauth_login.rs"
+
+[patches.query]
+type = "text"
+search = '''
+fn callback_bind_host(callback_url: Option<&str>) -> &'static str {
+    let Some(callback_url) = callback_url else {
+        return "127.0.0.1";
+    };
+
+    let Ok(parsed) = Url::parse(callback_url) else {
+        return "127.0.0.1";
+    };
+
+    match parsed.host_str() {
+        Some("localhost" | "127.0.0.1" | "::1") | None => "127.0.0.1",
+        Some(_) => "0.0.0.0",
+    }
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+fn callback_bind_host(_callback_url: Option<&str>) -> &'static str {
+    "127.0.0.1"
+}
+'''
+
+[[patches]]
+id = "privacy-v0.105-oauth-tests-add-loopback-host-coverage"
+file = "rmcp-client/src/perform_oauth_login.rs"
+
+[patches.query]
+type = "text"
+search = '''
+#[cfg(test)]
+mod tests {
+    use super::CallbackOutcome;
+    use super::callback_path_from_redirect_uri;
+    use super::parse_oauth_callback;
+
+    #[test]
+    fn parse_oauth_callback_accepts_default_path() {
+        let parsed = parse_oauth_callback("/callback?code=abc&state=xyz", "/callback");
+        assert!(matches!(parsed, CallbackOutcome::Success(_)));
+    }
+
+    #[test]
+    fn parse_oauth_callback_accepts_custom_path() {
+        let parsed = parse_oauth_callback("/oauth/callback?code=abc&state=xyz", "/oauth/callback");
+        assert!(matches!(parsed, CallbackOutcome::Success(_)));
+    }
+
+    #[test]
+    fn parse_oauth_callback_rejects_wrong_path() {
+        let parsed = parse_oauth_callback("/callback?code=abc&state=xyz", "/oauth/callback");
+        assert!(matches!(parsed, CallbackOutcome::Invalid));
+    }
+
+    #[test]
+    fn callback_path_comes_from_redirect_uri() {
+        let path = callback_path_from_redirect_uri("https://example.com/oauth/callback")
+            .expect("redirect URI should parse");
+        assert_eq!(path, "/oauth/callback");
+    }
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+#[cfg(test)]
+mod tests {
+    use super::CallbackOutcome;
+    use super::callback_bind_host;
+    use super::callback_path_from_redirect_uri;
+    use super::parse_oauth_callback;
+    use super::resolve_redirect_uri;
+    use tiny_http::Server;
+
+    #[test]
+    fn parse_oauth_callback_accepts_default_path() {
+        let parsed = parse_oauth_callback("/callback?code=abc&state=xyz", "/callback");
+        assert!(matches!(parsed, CallbackOutcome::Success(_)));
+    }
+
+    #[test]
+    fn parse_oauth_callback_accepts_custom_path() {
+        let parsed = parse_oauth_callback("/oauth/callback?code=abc&state=xyz", "/oauth/callback");
+        assert!(matches!(parsed, CallbackOutcome::Success(_)));
+    }
+
+    #[test]
+    fn parse_oauth_callback_rejects_wrong_path() {
+        let parsed = parse_oauth_callback("/callback?code=abc&state=xyz", "/oauth/callback");
+        assert!(matches!(parsed, CallbackOutcome::Invalid));
+    }
+
+    #[test]
+    fn callback_path_comes_from_redirect_uri() {
+        let path = callback_path_from_redirect_uri("https://example.com/oauth/callback")
+            .expect("redirect URI should parse");
+        assert_eq!(path, "/oauth/callback");
+    }
+
+    #[test]
+    fn callback_bind_host_is_always_loopback() {
+        assert_eq!(callback_bind_host(None), "127.0.0.1");
+        assert_eq!(
+            callback_bind_host(Some("http://localhost:8787/callback")),
+            "127.0.0.1"
+        );
+        assert_eq!(
+            callback_bind_host(Some("http://192.168.1.10:8787/callback")),
+            "127.0.0.1"
+        );
+    }
+
+    #[test]
+    fn resolve_redirect_uri_rejects_non_loopback_host() {
+        let server = Server::http("127.0.0.1:0").expect("callback server should start");
+        let err = resolve_redirect_uri(&server, Some("http://192.168.1.10:8787/callback"))
+            .expect_err("non-loopback callback URL must be rejected");
+        assert!(
+            err.to_string().contains("host must be loopback"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn resolve_redirect_uri_accepts_loopback_host() {
+        let server = Server::http("127.0.0.1:0").expect("callback server should start");
+        let uri = resolve_redirect_uri(&server, Some("http://127.0.0.1:8787/callback"))
+            .expect("loopback callback URL should be accepted");
+        assert_eq!(uri, "http://127.0.0.1:8787/callback");
+    }
+}
+'''
+
+# =============================================================================
+# Remove external_logos=true connector query behavior
+# =============================================================================
+
+[[patches]]
+id = "privacy-v0.105-connectors-remove-external-logos-query"
+file = "chatgpt/src/connectors.rs"
+
+[patches.query]
+type = "text"
+search = '''
+                format!(
+                    "/connectors/directory/list?tier=categorized&token={encoded_token}&external_logos=true"
+                )
+            }
+            None => "/connectors/directory/list?tier=categorized&external_logos=true".to_string(),
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+                format!(
+                    "/connectors/directory/list?tier=categorized&token={encoded_token}"
+                )
+            }
+            None => "/connectors/directory/list?tier=categorized".to_string(),
+'''
+
+[[patches]]
+id = "privacy-v0.105-connectors-remove-workspace-external-logos-query"
+file = "chatgpt/src/connectors.rs"
+
+[patches.query]
+type = "text"
+search = '''
+        "/connectors/directory/list_workspace?external_logos=true".to_string(),
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+        "/connectors/directory/list_workspace".to_string(),
+'''
+
+[[patches]]
+id = "privacy-v0.105-app-list-test-no-external-logos-required"
+file = "app-server/tests/suite/v2/app_list.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    let external_logos_ok = uri
+        .query()
+        .is_some_and(|query| query.split('&').any(|pair| pair == "external_logos=true"));
+
+    if !bearer_ok || !account_ok {
+        Err(StatusCode::UNAUTHORIZED)
+    } else if !external_logos_ok {
+        Err(StatusCode::BAD_REQUEST)
+    } else {
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    let _ = uri;
+
+    if !bearer_ok || !account_ok {
+        Err(StatusCode::UNAUTHORIZED)
+    } else {
+'''
+
+# =============================================================================
+# Test updates for metadata / realtime behavior
+# =============================================================================
+
+[[patches]]
+id = "privacy-v0.105-realtime-tests-remove-overrides-and-mirroring"
+file = "core/tests/suite/realtime_conversation.rs"
+
+[patches.query]
+type = "text"
+search = '''
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conversation_uses_experimental_realtime_ws_base_url_override() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let startup_server = start_websocket_server(vec![vec![]]).await;
+    let realtime_server = start_websocket_server(vec![vec![vec![json!({
+        "type": "session.created",
+        "session": { "id": "sess_override" }
+    })]]])
+    .await;
+
+    let mut builder = test_codex().with_config({
+        let realtime_base_url = realtime_server.uri().to_string();
+        move |config| {
+            config.experimental_realtime_ws_base_url = Some(realtime_base_url);
+        }
+    });
+    let test = builder.build_with_websocket_server(&startup_server).await?;
+    assert!(
+        startup_server
+            .wait_for_handshakes(1, Duration::from_secs(2))
+            .await
+    );
+
+    test.codex
+        .submit(Op::RealtimeConversationStart(ConversationStartParams {
+            prompt: "backend prompt".to_string(),
+            session_id: None,
+        }))
+        .await?;
+
+    let session_created = wait_for_event_match(&test.codex, |msg| match msg {
+        EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
+            payload: RealtimeEvent::SessionCreated { session_id },
+        }) => Some(session_id.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(session_created, "sess_override");
+
+    let startup_connections = startup_server.connections();
+    assert_eq!(startup_connections.len(), 1);
+
+    let realtime_connections = realtime_server.connections();
+    assert_eq!(realtime_connections.len(), 1);
+    assert_eq!(
+        realtime_connections[0][0].body_json()["type"].as_str(),
+        Some("session.create")
+    );
+
+    startup_server.shutdown().await;
+    realtime_server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conversation_uses_experimental_realtime_ws_backend_prompt_override() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_websocket_server(vec![
+        vec![],
+        vec![vec![json!({
+            "type": "session.created",
+            "session": { "id": "sess_override" }
+        })]],
+    ])
+    .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config.experimental_realtime_ws_backend_prompt = Some("prompt from config".to_string());
+    });
+    let test = builder.build_with_websocket_server(&server).await?;
+    assert!(server.wait_for_handshakes(1, Duration::from_secs(2)).await);
+
+    test.codex
+        .submit(Op::RealtimeConversationStart(ConversationStartParams {
+            prompt: "prompt from op".to_string(),
+            session_id: None,
+        }))
+        .await?;
+
+    let session_created = wait_for_event_match(&test.codex, |msg| match msg {
+        EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
+            payload: RealtimeEvent::SessionCreated { session_id },
+        }) => Some(session_id.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(session_created, "sess_override");
+
+    let connections = server.connections();
+    assert_eq!(connections.len(), 2);
+    assert_eq!(
+        connections[1][0].body_json()["session"]["backend_prompt"].as_str(),
+        Some("prompt from config")
+    );
+
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conversation_mirrors_assistant_message_text_to_realtime_websocket() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let api_server = start_mock_server().await;
+    let _response_mock = responses::mount_sse_once(
+        &api_server,
+        responses::sse(vec![
+            responses::ev_response_created("resp_1"),
+            responses::ev_assistant_message("msg_1", "assistant says hi"),
+            responses::ev_completed("resp_1"),
+        ]),
+    )
+    .await;
+
+    let realtime_server = start_websocket_server(vec![vec![
+        vec![json!({
+            "type": "session.created",
+            "session": { "id": "sess_1" }
+        })],
+        vec![],
+    ]])
+    .await;
+
+    let mut builder = test_codex().with_config({
+        let realtime_base_url = realtime_server.uri().to_string();
+        move |config| {
+            config.experimental_realtime_ws_base_url = Some(realtime_base_url);
+        }
+    });
+    let test = builder.build(&api_server).await?;
+
+    test.codex
+        .submit(Op::RealtimeConversationStart(ConversationStartParams {
+            prompt: "backend prompt".to_string(),
+            session_id: None,
+        }))
+        .await?;
+
+    let session_created = wait_for_event_match(&test.codex, |msg| match msg {
+        EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
+            payload: RealtimeEvent::SessionCreated { session_id },
+        }) => Some(session_id.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(session_created, "sess_1");
+
+    test.submit_turn("hello").await?;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        let connections = realtime_server.connections();
+        if connections.len() == 1 && connections[0].len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let realtime_connections = realtime_server.connections();
+    assert_eq!(realtime_connections.len(), 1);
+    assert_eq!(realtime_connections[0].len(), 2);
+    assert_eq!(
+        realtime_connections[0][0].body_json()["type"].as_str(),
+        Some("session.create")
+    );
+    assert_eq!(
+        realtime_connections[0][1].body_json()["type"].as_str(),
+        Some("conversation.item.create")
+    );
+    assert_eq!(
+        realtime_connections[0][1].body_json()["item"]["content"][0]["text"].as_str(),
+        Some("assistant says hi")
+    );
+
+    realtime_server.shutdown().await;
+    Ok(())
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conversation_does_not_mirror_assistant_message_text_to_realtime_websocket() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_websocket_server(vec![
+        vec![vec![
+            responses::ev_response_created("resp_1"),
+            responses::ev_assistant_message("msg_1", "assistant says hi"),
+            responses::ev_completed("resp_1"),
+        ]],
+        vec![vec![json!({
+            "type": "session.created",
+            "session": { "id": "sess_1" }
+        })]],
+    ])
+    .await;
+
+    let mut builder = test_codex();
+    let test = builder.build_with_websocket_server(&server).await?;
+    assert!(server.wait_for_handshakes(1, Duration::from_secs(2)).await);
+
+    test.codex
+        .submit(Op::RealtimeConversationStart(ConversationStartParams {
+            prompt: "backend prompt".to_string(),
+            session_id: None,
+        }))
+        .await?;
+
+    let session_created = wait_for_event_match(&test.codex, |msg| match msg {
+        EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
+            payload: RealtimeEvent::SessionCreated { session_id },
+        }) => Some(session_id.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(session_created, "sess_1");
+
+    test.submit_turn("hello").await?;
+
+    test.codex
+        .submit(Op::RealtimeConversationText(ConversationTextParams {
+            text: "manual realtime text".to_string(),
+        }))
+        .await?;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        let connections = server.connections();
+        let realtime_connection = connections
+            .iter()
+            .find(|connection| {
+                connection
+                    .first()
+                    .and_then(|request| request.body_json()["type"].as_str())
+                    == Some("session.create")
+            })
+            .cloned();
+        if let Some(connection) = realtime_connection {
+            if connection.len() >= 2 {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let connections = server.connections();
+    let realtime_connection = connections
+        .iter()
+        .find(|connection| {
+            connection
+                .first()
+                .and_then(|request| request.body_json()["type"].as_str())
+                == Some("session.create")
+        })
+        .expect("realtime websocket connection should exist");
+
+    assert_eq!(realtime_connection.len(), 2);
+    assert_eq!(
+        realtime_connection[0].body_json()["type"].as_str(),
+        Some("session.create")
+    );
+    assert_eq!(
+        realtime_connection[1].body_json()["type"].as_str(),
+        Some("conversation.item.create")
+    );
+    assert_eq!(
+        realtime_connection[1].body_json()["item"]["content"][0]["text"].as_str(),
+        Some("manual realtime text")
+    );
+
+    server.shutdown().await;
+    Ok(())
+}
+'''
+
+[[patches]]
+id = "privacy-v0.105-responses-headers-test-no-turn-metadata-header"
+file = "core/tests/responses_headers.rs"
+
+[patches.query]
+type = "text"
+search = '''
+#[tokio::test]
+async fn responses_stream_includes_turn_metadata_header_for_git_workspace_e2e() {
+    core_test_support::skip_if_no_network!();
+
+    let server = responses::start_mock_server().await;
+    let response_body = responses::sse(vec![
+        responses::ev_response_created("resp-1"),
+        responses::ev_completed("resp-1"),
+    ]);
+
+    let test = test_codex().build(&server).await.expect("build test codex");
+    let cwd = test.cwd_path();
+
+    let first_request = responses::mount_sse_once(&server, response_body.clone()).await;
+    test.submit_turn("hello")
+        .await
+        .expect("submit first turn prompt");
+    let initial_header = first_request
+        .single_request()
+        .header("x-codex-turn-metadata")
+        .expect("x-codex-turn-metadata header should be present");
+    let initial_parsed: serde_json::Value =
+        serde_json::from_str(&initial_header).expect("x-codex-turn-metadata should be valid JSON");
+    let initial_turn_id = initial_parsed
+        .get("turn_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("turn_id should be present")
+        .to_string();
+    assert!(
+        !initial_turn_id.is_empty(),
+        "turn_id should not be empty in x-codex-turn-metadata"
+    );
+    assert_eq!(
+        initial_parsed
+            .get("sandbox")
+            .and_then(serde_json::Value::as_str),
+        Some("none")
+    );
+
+    let git_config_global = cwd.join("empty-git-config");
+    std::fs::write(&git_config_global, "").expect("write empty git config");
+    let run_git = |args: &[&str]| {
+        let output = Command::new("git")
+            .env("GIT_CONFIG_GLOBAL", &git_config_global)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: stdout={} stderr={}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+
+    run_git(&["init"]);
+    run_git(&["config", "user.name", "Test User"]);
+    run_git(&["config", "user.email", "test@example.com"]);
+    std::fs::write(cwd.join("README.md"), "hello").expect("write README");
+    run_git(&["add", "."]);
+    run_git(&["commit", "-m", "initial commit"]);
+    run_git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/openai/codex.git",
+    ]);
+
+    let expected_head = String::from_utf8(run_git(&["rev-parse", "HEAD"]).stdout)
+        .expect("git rev-parse output should be valid UTF-8")
+        .trim()
+        .to_string();
+    let expected_origin = String::from_utf8(run_git(&["remote", "get-url", "origin"]).stdout)
+        .expect("git remote get-url output should be valid UTF-8")
+        .trim()
+        .to_string();
+
+    let first_response = responses::sse(vec![
+        responses::ev_response_created("resp-2"),
+        responses::ev_reasoning_item("rsn-1", &["thinking"], &[]),
+        responses::ev_shell_command_call("call-1", "echo turn-metadata"),
+        responses::ev_completed("resp-2"),
+    ]);
+    let follow_up_response = responses::sse(vec![
+        responses::ev_response_created("resp-3"),
+        responses::ev_assistant_message("msg-1", "done"),
+        responses::ev_completed("resp-3"),
+    ]);
+    let request_log = responses::mount_response_sequence(
+        &server,
+        vec![
+            responses::sse_response(first_response),
+            responses::sse_response(follow_up_response),
+        ],
+    )
+    .await;
+
+    test.submit_turn("hello")
+        .await
+        .expect("submit post-git turn prompt");
+
+    let requests = request_log.requests();
+    assert_eq!(requests.len(), 2, "expected two requests in one turn");
+
+    let first_parsed: serde_json::Value = serde_json::from_str(
+        &requests[0]
+            .header("x-codex-turn-metadata")
+            .expect("first request should include turn metadata"),
+    )
+    .expect("first metadata should be valid json");
+    let second_parsed: serde_json::Value = serde_json::from_str(
+        &requests[1]
+            .header("x-codex-turn-metadata")
+            .expect("second request should include turn metadata"),
+    )
+    .expect("second metadata should be valid json");
+
+    let first_turn_id = first_parsed
+        .get("turn_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("first turn_id should be present");
+    let second_turn_id = second_parsed
+        .get("turn_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("second turn_id should be present");
+    assert_eq!(
+        first_turn_id, second_turn_id,
+        "requests should share turn_id"
+    );
+    assert_ne!(
+        second_turn_id,
+        initial_turn_id.as_str(),
+        "post-git turn should have a new turn_id"
+    );
+
+    assert_eq!(
+        second_parsed
+            .get("sandbox")
+            .and_then(serde_json::Value::as_str),
+        Some("none")
+    );
+
+    let workspace = second_parsed
+        .get("workspaces")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|workspaces| workspaces.values().next())
+        .cloned()
+        .expect("second request should include git workspace metadata");
+    assert_eq!(
+        workspace
+            .get("latest_git_commit_hash")
+            .and_then(serde_json::Value::as_str),
+        Some(expected_head.as_str())
+    );
+    assert_eq!(
+        workspace
+            .get("associated_remote_urls")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|remotes| remotes.get("origin"))
+            .and_then(serde_json::Value::as_str),
+        Some(expected_origin.as_str())
+    );
+    assert_eq!(
+        workspace
+            .get("has_changes")
+            .and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+#[tokio::test]
+async fn responses_stream_omits_turn_metadata_header_e2e() {
+    core_test_support::skip_if_no_network!();
+
+    let server = responses::start_mock_server().await;
+    let test = test_codex().build(&server).await.expect("build test codex");
+
+    let first_response = responses::sse(vec![
+        responses::ev_response_created("resp-1"),
+        responses::ev_reasoning_item("rsn-1", &["thinking"], &[]),
+        responses::ev_shell_command_call("call-1", "echo turn-metadata"),
+        responses::ev_completed("resp-1"),
+    ]);
+    let follow_up_response = responses::sse(vec![
+        responses::ev_response_created("resp-2"),
+        responses::ev_assistant_message("msg-1", "done"),
+        responses::ev_completed("resp-2"),
+    ]);
+
+    let request_log = responses::mount_response_sequence(
+        &server,
+        vec![
+            responses::sse_response(first_response),
+            responses::sse_response(follow_up_response),
+        ],
+    )
+    .await;
+
+    test.submit_turn("hello")
+        .await
+        .expect("submit turn prompt");
+
+    let requests = request_log.requests();
+    assert_eq!(requests.len(), 2, "expected two requests in one turn");
+    assert_eq!(requests[0].header("x-codex-turn-metadata"), None);
+    assert_eq!(requests[1].header("x-codex-turn-metadata"), None);
+}
+'''
+
+[[patches]]
+id = "privacy-v0.105-client-websocket-test-no-client-metadata"
+file = "core/tests/suite/client_websockets.rs"
+
+[patches.query]
+type = "text"
+search = '''
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_websocket_forwards_turn_metadata_on_create_and_append() {
+    skip_if_no_network!();
+
+    let server = start_websocket_server(vec![vec![
+        vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg-1", "assistant output"),
+            ev_done(),
+        ],
+        vec![ev_response_created("resp-2"), ev_completed("resp-2")],
+    ]])
+    .await;
+
+    let harness = websocket_harness(&server).await;
+    let mut client_session = harness.client.new_session();
+    let first_turn_metadata = r#"{"turn_id":"turn-123","sandbox":"workspace-write"}"#;
+    let enriched_turn_metadata = r#"{"turn_id":"turn-123","sandbox":"workspace-write","workspaces":[{"root_path":"/tmp/repo","latest_git_commit_hash":"abc123","associated_remote_urls":["git@github.com:openai/codex.git"],"has_changes":true}]}"#;
+    let prompt_one = prompt_with_input(vec![message_item("hello")]);
+    let prompt_two = prompt_with_input(vec![
+        message_item("hello"),
+        assistant_message_item("msg-1", "assistant output"),
+        message_item("second"),
+    ]);
+
+    stream_until_complete_with_turn_metadata(
+        &mut client_session,
+        &harness,
+        &prompt_one,
+        Some(first_turn_metadata),
+    )
+    .await;
+    stream_until_complete_with_turn_metadata(
+        &mut client_session,
+        &harness,
+        &prompt_two,
+        Some(enriched_turn_metadata),
+    )
+    .await;
+
+    let connection = server.single_connection();
+    assert_eq!(connection.len(), 2);
+    let first = connection.first().expect("missing request").body_json();
+    let second = connection.get(1).expect("missing request").body_json();
+
+    assert_eq!(first["type"].as_str(), Some("response.create"));
+    assert_eq!(
+        first["client_metadata"]["x-codex-turn-metadata"].as_str(),
+        Some(first_turn_metadata)
+    );
+    assert_eq!(second["type"].as_str(), Some("response.append"));
+    assert_eq!(
+        second["client_metadata"]["x-codex-turn-metadata"].as_str(),
+        Some(enriched_turn_metadata)
+    );
+
+    let first_metadata: serde_json::Value =
+        serde_json::from_str(first_turn_metadata).expect("first metadata should be valid json");
+    let second_metadata: serde_json::Value = serde_json::from_str(enriched_turn_metadata)
+        .expect("enriched metadata should be valid json");
+
+    assert_eq!(first_metadata["turn_id"].as_str(), Some("turn-123"));
+    assert_eq!(second_metadata["turn_id"].as_str(), Some("turn-123"));
+    assert_eq!(
+        second_metadata["workspaces"][0]["has_changes"].as_bool(),
+        Some(true)
+    );
+
+    server.shutdown().await;
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_websocket_omits_turn_metadata_client_metadata_on_create_and_append() {
+    skip_if_no_network!();
+
+    let server = start_websocket_server(vec![vec![
+        vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg-1", "assistant output"),
+            ev_done(),
+        ],
+        vec![ev_response_created("resp-2"), ev_completed("resp-2")],
+    ]])
+    .await;
+
+    let harness = websocket_harness(&server).await;
+    let mut client_session = harness.client.new_session();
+    let first_turn_metadata = r#"{"turn_id":"turn-123","sandbox":"workspace-write"}"#;
+    let enriched_turn_metadata = r#"{"turn_id":"turn-123","sandbox":"workspace-write","workspaces":[{"root_path":"/tmp/repo","latest_git_commit_hash":"abc123","associated_remote_urls":["git@github.com:openai/codex.git"],"has_changes":true}]}"#;
+    let prompt_one = prompt_with_input(vec![message_item("hello")]);
+    let prompt_two = prompt_with_input(vec![
+        message_item("hello"),
+        assistant_message_item("msg-1", "assistant output"),
+        message_item("second"),
+    ]);
+
+    stream_until_complete_with_turn_metadata(
+        &mut client_session,
+        &harness,
+        &prompt_one,
+        Some(first_turn_metadata),
+    )
+    .await;
+    stream_until_complete_with_turn_metadata(
+        &mut client_session,
+        &harness,
+        &prompt_two,
+        Some(enriched_turn_metadata),
+    )
+    .await;
+
+    let connection = server.single_connection();
+    assert_eq!(connection.len(), 2);
+    let first = connection.first().expect("missing request").body_json();
+    let second = connection.get(1).expect("missing request").body_json();
+
+    assert_eq!(first["type"].as_str(), Some("response.create"));
+    assert!(first.get("client_metadata").is_none());
+
+    assert_eq!(second["type"].as_str(), Some("response.append"));
+    assert!(second.get("client_metadata").is_none());
+
+    server.shutdown().await;
+}
+'''
+
+[[patches]]
+id = "privacy-v0.105-turn-state-test-remove-turn-metadata-assertions"
+file = "core/tests/suite/turn_state.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    let parse_turn_id = |header: Option<String>| {
+        let value = header?;
+        let parsed: Value = serde_json::from_str(&value).ok()?;
+        parsed
+            .get("turn_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+
+    let first_turn_id = parse_turn_id(requests[0].header("x-codex-turn-metadata"))
+        .expect("first request should include turn metadata turn_id");
+    let second_turn_id = parse_turn_id(requests[1].header("x-codex-turn-metadata"))
+        .expect("follow-up request should include turn metadata turn_id");
+    let third_turn_id = parse_turn_id(requests[2].header("x-codex-turn-metadata"))
+        .expect("new turn request should include turn metadata turn_id");
+
+    assert_eq!(first_turn_id, second_turn_id);
+    assert_ne!(second_turn_id, third_turn_id);
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    assert_eq!(requests[0].header("x-codex-turn-metadata"), None);
+    assert_eq!(requests[1].header("x-codex-turn-metadata"), None);
+    assert_eq!(requests[2].header("x-codex-turn-metadata"), None);
+'''
