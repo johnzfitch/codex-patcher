@@ -1,10 +1,9 @@
 # =============================================================================
-# PRIVACY PATCHES (v0.105.0-alpha.13 and later)
+# PRIVACY PATCHES (v0.105.0-alpha.13 through v0.107.x)
 # =============================================================================
 #
-# Privacy hardening for codex-rs 0.105.x and later.
-# No upper bound — applies to all future versions until a patch fails to match,
-# at which point a new versioned file should be added alongside this one.
+# Privacy hardening for codex-rs 0.105.x through 0.107.x.
+# For 0.108+ use privacy-v0.108-alpha.toml (API changes require different patches).
 #
 # Originally written against 0.105.x:
 # - Remove realtime runtime-text mirroring of normal turn activity.
@@ -20,30 +19,20 @@
 # - Enforce loopback-only MCP OAuth callback binding and callback URL hosts.
 # - Remove external_logos query behavior from connector directory requests.
 # - Update affected tests to match privacy-hardened behavior.
+# - Retired stale entries are archived outside `patches/` at:
+#   archive/retired-patches/privacy-v0.105-alpha13.retired-on-0.107.0-alpha.3.toml
 #
 # =============================================================================
 
 [meta]
 name = "privacy-patches-v0.105-alpha13"
-description = "Privacy hardening for 0.105.0-alpha.13+: disable realtime mirroring/metadata/analytics, force non-login shell, disable selected env overrides, enforce loopback-only OAuth callbacks, and remove external logos query"
-version_range = ">=0.105.0-alpha.13"
+description = "Privacy hardening for 0.105.0-alpha.13 through 0.107.x: disable realtime mirroring/metadata/analytics, force non-login shell, disable selected env overrides, enforce loopback-only OAuth callbacks, and remove external logos query"
+version_range = ">=0.105.0-alpha.13, <0.108.0-alpha.1"
 workspace_relative = true
 
 # =============================================================================
 # Realtime runtime-text mirroring removal (core/src/codex.rs)
 # =============================================================================
-
-[[patches]]
-id = "privacy-v0.105-remove-patch-apply-status-import"
-file = "core/src/codex.rs"
-
-[patches.query]
-type = "text"
-search = "use crate::protocol::PatchApplyStatus;\n"
-
-[patches.operation]
-type = "replace"
-text = "// PRIVACY PATCH: PatchApplyStatus import removed with realtime mirroring.\n"
 
 [[patches]]
 id = "privacy-v0.105-remove-send-event-realtime-mirror-call"
@@ -87,73 +76,6 @@ search = '''
 [patches.operation]
 type = "replace"
 text = "// PRIVACY PATCH: Removed runtime event-text mirroring helper.\n"
-
-[[patches]]
-id = "privacy-v0.105-remove-realtime-text-for-event-helper"
-file = "core/src/codex.rs"
-
-[patches.query]
-type = "text"
-search = '''
-fn realtime_text_for_event(msg: &EventMsg) -> Option<String> {
-    match msg {
-        EventMsg::AgentMessage(event) => Some(event.message.clone()),
-        EventMsg::ItemCompleted(event) => match &event.item {
-            TurnItem::AgentMessage(item) => Some(agent_message_text(item)),
-            _ => None,
-        },
-        EventMsg::ExecCommandBegin(event) => {
-            let command = event.command.join(" ");
-            Some(format!(
-                "Exec command started: {command}\nWorking directory: {}",
-                event.cwd.display()
-            ))
-        }
-        EventMsg::PatchApplyBegin(event) => {
-            let mut files: Vec<String> = event
-                .changes
-                .keys()
-                .map(|path| path.display().to_string())
-                .collect();
-            files.sort();
-            let file_list = if files.is_empty() {
-                "none".to_string()
-            } else {
-                files.join(", ")
-            };
-            Some(format!(
-                "apply_patch started ({count} file change(s))\nFiles: {file_list}",
-                count = files.len()
-            ))
-        }
-        EventMsg::PatchApplyEnd(event) => {
-            let status = match event.status {
-                PatchApplyStatus::Completed => "completed",
-                PatchApplyStatus::Failed => "failed",
-                PatchApplyStatus::Declined => "declined",
-            };
-            let mut text = format!("apply_patch {status}");
-            if !event.stdout.is_empty() {
-                text.push_str(&format!("\nstdout:\n{}", event.stdout));
-            }
-            if !event.stderr.is_empty() {
-                text.push_str(&format!("\nstderr:\n{}", event.stderr));
-            }
-            Some(text)
-        }
-        _ => None,
-    }
-}
-
-'''
-
-[patches.operation]
-type = "replace"
-text = "// PRIVACY PATCH: Removed realtime event text mapping helper.\n"
-
-# =============================================================================
-# Turn metadata transport removal (core/src/client.rs, core/src/lib.rs)
-# =============================================================================
 
 [[patches]]
 id = "privacy-v0.105-remove-turn-metadata-header-constant"
@@ -667,21 +589,6 @@ pub(crate) fn track_app_used(
 '''
 
 [[patches]]
-id = "privacy-v0.105-remove-mcp-app-used-analytics-imports"
-file = "core/src/mcp_tool_call.rs"
-
-[patches.query]
-type = "text"
-search = '''
-use crate::analytics_client::AppInvocation;
-use crate::analytics_client::build_track_events_context;
-'''
-
-[patches.operation]
-type = "replace"
-text = "// PRIVACY PATCH: Removed app-used analytics imports.\n"
-
-[[patches]]
 id = "privacy-v0.105-remove-mcp-app-used-analytics-call-approval-branch"
 file = "core/src/mcp_tool_call.rs"
 
@@ -713,70 +620,6 @@ text = '''
 
     let status = if result.is_ok() { "ok" } else { "error" };
 '''
-
-[[patches]]
-id = "privacy-v0.105-mcp-app-used-helper-noop"
-file = "core/src/mcp_tool_call.rs"
-
-[patches.query]
-type = "text"
-search = '''
-async fn maybe_track_codex_app_used(
-    sess: &Session,
-    turn_context: &TurnContext,
-    server: &str,
-    tool_name: &str,
-) {
-    if server != CODEX_APPS_MCP_SERVER_NAME {
-        return;
-    }
-    let metadata = lookup_mcp_app_usage_metadata(sess, server, tool_name).await;
-    let (connector_id, app_name) = metadata
-        .map(|metadata| (metadata.connector_id, metadata.app_name))
-        .unwrap_or((None, None));
-    let invoke_type = if let Some(connector_id) = connector_id.as_deref() {
-        let mentioned_connector_ids = sess.get_connector_selection().await;
-        if mentioned_connector_ids.contains(connector_id) {
-            "explicit"
-        } else {
-            "implicit"
-        }
-    } else {
-        "implicit"
-    };
-
-    let tracking = build_track_events_context(
-        turn_context.model_info.slug.clone(),
-        sess.conversation_id.to_string(),
-        turn_context.sub_id.clone(),
-    );
-    sess.services.analytics_events_client.track_app_used(
-        tracking,
-        AppInvocation {
-            connector_id,
-            app_name,
-            invoke_type: Some(invoke_type.to_string()),
-        },
-    );
-}
-'''
-
-[patches.operation]
-type = "replace"
-text = '''
-async fn maybe_track_codex_app_used(
-    sess: &Session,
-    turn_context: &TurnContext,
-    server: &str,
-    tool_name: &str,
-) {
-    let _ = (sess, turn_context, server, tool_name);
-}
-'''
-
-# =============================================================================
-# Realtime override removal (runtime + config)
-# =============================================================================
 
 [[patches]]
 id = "privacy-v0.105-realtime-handle-start-remove-provider-mutation"
@@ -812,37 +655,6 @@ type = "replace"
 text = '''
     let _config = sess.get_config().await;
     let prompt = params.prompt;
-'''
-
-[[patches]]
-id = "privacy-v0.105-config-toml-remove-realtime-override-keys"
-file = "core/src/config/mod.rs"
-
-[patches.query]
-type = "text"
-search = '''
-    /// Base URL for requests to ChatGPT (as opposed to the OpenAI API).
-    pub chatgpt_base_url: Option<String>,
-
-    /// Experimental / do not use. Overrides only the realtime conversation
-    /// websocket transport base URL (the `Op::RealtimeConversation` `/ws`
-    /// connection) without changing normal provider HTTP requests.
-    pub experimental_realtime_ws_base_url: Option<String>,
-    /// Experimental / do not use. Overrides only the realtime conversation
-    /// websocket transport backend prompt (the `Op::RealtimeConversation`
-    /// `/ws` session.create backend_prompt) without changing normal prompts.
-    pub experimental_realtime_ws_backend_prompt: Option<String>,
-    pub projects: Option<HashMap<String, ProjectConfig>>,
-'''
-
-[patches.operation]
-type = "replace"
-text = '''
-    /// Base URL for requests to ChatGPT (as opposed to the OpenAI API).
-    pub chatgpt_base_url: Option<String>,
-
-    // PRIVACY PATCH: Realtime websocket override keys removed from ConfigToml.
-    pub projects: Option<HashMap<String, ProjectConfig>>,
 '''
 
 [[patches]]
@@ -1088,88 +900,6 @@ text = '''
     // Install a simple subscriber so `tracing` output is visible. Users can
     // control the log level with `RUST_LOG`.
     // PRIVACY PATCH: Ignore LOG_FORMAT env override and keep stderr logs in text format.
-'''
-
-[[patches]]
-id = "privacy-v0.105-zsh-wrapper-socket-env-ignored"
-file = "core/src/zsh_exec_bridge/mod.rs"
-
-[patches.query]
-type = "text"
-search = '''
-        let wrapper_socket_path = req
-            .env
-            .get(ZSH_EXEC_BRIDGE_WRAPPER_SOCKET_ENV_VAR)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.next_wrapper_socket_path());
-'''
-
-[patches.operation]
-type = "replace"
-text = '''
-        let wrapper_socket_path = self.next_wrapper_socket_path();
-'''
-
-[[patches]]
-id = "privacy-v0.105-zsh-wrapper-mode-requires-full-handshake-env"
-file = "core/src/zsh_exec_bridge/mod.rs"
-
-[patches.query]
-type = "text"
-search = '''
-pub fn maybe_run_zsh_exec_wrapper_mode() -> anyhow::Result<bool> {
-    if std::env::var_os(ZSH_EXEC_WRAPPER_MODE_ENV_VAR).is_none() {
-        return Ok(false);
-    }
-
-    run_exec_wrapper_mode()?;
-    Ok(true)
-}
-'''
-
-[patches.operation]
-type = "replace"
-text = '''
-pub fn maybe_run_zsh_exec_wrapper_mode() -> anyhow::Result<bool> {
-    if std::env::var_os(ZSH_EXEC_WRAPPER_MODE_ENV_VAR).is_none() {
-        return Ok(false);
-    }
-    if std::env::var_os(ZSH_EXEC_BRIDGE_WRAPPER_SOCKET_ENV_VAR).is_none() {
-        return Ok(false);
-    }
-
-    #[cfg(not(unix))]
-    {
-        return Ok(false);
-    }
-
-    #[cfg(unix)]
-    if std::env::var_os(EXEC_WRAPPER_ENV_VAR).is_none() {
-        return Ok(false);
-    }
-
-    run_exec_wrapper_mode()?;
-    Ok(true)
-}
-'''
-
-[[patches]]
-id = "privacy-v0.105-remove-legacy-bash-exec-wrapper-export"
-file = "exec-server/src/posix/escalate_server.rs"
-
-[patches.query]
-type = "text"
-search = '''
-        env.insert(
-            LEGACY_BASH_EXEC_WRAPPER_ENV_VAR.to_string(),
-            self.execve_wrapper.to_string_lossy().to_string(),
-        );
-'''
-
-[patches.operation]
-type = "replace"
-text = '''
-        let _ = LEGACY_BASH_EXEC_WRAPPER_ENV_VAR;
 '''
 
 [[patches]]
@@ -2167,4 +1897,174 @@ text = '''
     assert_eq!(requests[0].header("x-codex-turn-metadata"), None);
     assert_eq!(requests[1].header("x-codex-turn-metadata"), None);
     assert_eq!(requests[2].header("x-codex-turn-metadata"), None);
+'''
+
+# =============================================================================
+# 0.107+ privacy regressions: raw realtime/js_repl logging + proxy audit PII
+# =============================================================================
+
+[[patches]]
+id = "privacy-v0.105-realtime-remove-text-output-debug-log"
+file = "core/src/realtime_conversation.rs"
+
+[patches.query]
+type = "text"
+search = '''
+                debug!(text = %text, "[realtime-text] realtime conversation text output");
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+                // PRIVACY PATCH: Removed realtime text-output debug logging.
+'''
+
+[[patches]]
+id = "privacy-v0.105-realtime-remove-text-input-debug-log"
+file = "core/src/realtime_conversation.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    debug!(text = %params.text, "[realtime-text] appending realtime conversation text input");
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    // PRIVACY PATCH: Removed realtime text-input debug logging.
+'''
+
+[[patches]]
+id = "privacy-v0.105-jsrepl-redact-nested-tool-raw-logs"
+file = "core/src/tools/js_repl/mod.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    fn log_tool_call_response(
+        req: &RunToolRequest,
+        ok: bool,
+        summary: &JsReplToolCallResponseSummary,
+        response: Option<&JsonValue>,
+        error: Option<&str>,
+    ) {
+        info!(
+            exec_id = %req.exec_id,
+            tool_call_id = %req.id,
+            tool_name = %req.tool_name,
+            ok,
+            summary = ?summary,
+            "js_repl nested tool call completed"
+        );
+        if let Some(response) = response {
+            trace!(
+                exec_id = %req.exec_id,
+                tool_call_id = %req.id,
+                tool_name = %req.tool_name,
+                response_json = %response,
+                "js_repl nested tool call raw response"
+            );
+        }
+        if let Some(error) = error {
+            trace!(
+                exec_id = %req.exec_id,
+                tool_call_id = %req.id,
+                tool_name = %req.tool_name,
+                error = %error,
+                "js_repl nested tool call raw error"
+            );
+        }
+    }
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    fn log_tool_call_response(
+        req: &RunToolRequest,
+        ok: bool,
+        _summary: &JsReplToolCallResponseSummary,
+        _response: Option<&JsonValue>,
+        _error: Option<&str>,
+    ) {
+        info!(
+            exec_id = %req.exec_id,
+            tool_call_id = %req.id,
+            tool_name = %req.tool_name,
+            ok,
+            "js_repl nested tool call completed"
+        );
+    }
+'''
+
+[[patches]]
+id = "privacy-v0.105-network-proxy-audit-metadata-default"
+file = "core/src/codex.rs"
+
+[patches.query]
+type = "text"
+search = '''
+        let network_proxy_audit_metadata = NetworkProxyAuditMetadata {
+            conversation_id: Some(conversation_id.to_string()),
+            app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            user_account_id: account_id,
+            auth_mode: auth_mode.map(|mode| mode.to_string()),
+            originator: Some(originator),
+            user_email: account_email,
+            terminal_type: Some(terminal_type),
+            model: Some(session_model.clone()),
+            slug: Some(session_model),
+        };
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+        let network_proxy_audit_metadata = NetworkProxyAuditMetadata::default();
+'''
+
+[[patches]]
+id = "privacy-v0.105-network-proxy-disable-policy-audit-events"
+file = "network-proxy/src/network_policy.rs"
+
+[patches.query]
+type = "text"
+search = '''
+fn emit_policy_audit_event(state: &NetworkProxyState, args: PolicyAuditEventArgs<'_>) {
+    let metadata = state.audit_metadata();
+    tracing::event!(
+        target: AUDIT_TARGET,
+        tracing::Level::INFO,
+        event.name = POLICY_DECISION_EVENT_NAME,
+        event.timestamp = %audit_timestamp(),
+        conversation.id = metadata.conversation_id.as_deref(),
+        app.version = metadata.app_version.as_deref(),
+        auth_mode = metadata.auth_mode.as_deref(),
+        originator = metadata.originator.as_deref(),
+        user.account_id = metadata.user_account_id.as_deref(),
+        user.email = metadata.user_email.as_deref(),
+        terminal.type = metadata.terminal_type.as_deref(),
+        model = metadata.model.as_deref(),
+        slug = metadata.slug.as_deref(),
+        network.policy.scope = args.scope,
+        network.policy.decision = args.decision,
+        network.policy.source = args.source,
+        network.policy.reason = args.reason,
+        network.transport.protocol = args.protocol.as_policy_protocol(),
+        server.address = args.server_address,
+        server.port = args.server_port,
+        http.request.method = args.method.unwrap_or(DEFAULT_METHOD),
+        client.address = args.client_addr.unwrap_or(DEFAULT_CLIENT_ADDRESS),
+        network.policy.override = args.policy_override,
+    );
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+fn emit_policy_audit_event(_state: &NetworkProxyState, _args: PolicyAuditEventArgs<'_>) {
+    // PRIVACY PATCH: Disable network proxy policy decision telemetry emission.
+}
 '''

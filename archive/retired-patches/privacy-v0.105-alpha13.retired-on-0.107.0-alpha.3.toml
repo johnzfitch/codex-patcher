@@ -1,0 +1,292 @@
+# Retired privacy-v0.105-alpha13 patch entries
+# Archived: 2026-02-26
+# Reason: these entries no longer match codex-rs 0.107.0-alpha.3+ and are permanently retired from active patch application.
+
+# Source file at retirement time: patches/privacy-v0.105-alpha13.toml
+
+# --- privacy-v0.105-remove-patch-apply-status-import
+[[patches]]
+id = "privacy-v0.105-remove-patch-apply-status-import"
+file = "core/src/codex.rs"
+
+[patches.query]
+type = "text"
+search = "use crate::protocol::PatchApplyStatus;\n"
+
+[patches.operation]
+type = "replace"
+text = "// PRIVACY PATCH: PatchApplyStatus import removed with realtime mirroring.\n"
+
+
+# --- privacy-v0.105-remove-realtime-text-for-event-helper
+[[patches]]
+id = "privacy-v0.105-remove-realtime-text-for-event-helper"
+file = "core/src/codex.rs"
+
+[patches.query]
+type = "text"
+search = '''
+fn realtime_text_for_event(msg: &EventMsg) -> Option<String> {
+    match msg {
+        EventMsg::AgentMessage(event) => Some(event.message.clone()),
+        EventMsg::ItemCompleted(event) => match &event.item {
+            TurnItem::AgentMessage(item) => Some(agent_message_text(item)),
+            _ => None,
+        },
+        EventMsg::ExecCommandBegin(event) => {
+            let command = event.command.join(" ");
+            Some(format!(
+                "Exec command started: {command}\nWorking directory: {}",
+                event.cwd.display()
+            ))
+        }
+        EventMsg::PatchApplyBegin(event) => {
+            let mut files: Vec<String> = event
+                .changes
+                .keys()
+                .map(|path| path.display().to_string())
+                .collect();
+            files.sort();
+            let file_list = if files.is_empty() {
+                "none".to_string()
+            } else {
+                files.join(", ")
+            };
+            Some(format!(
+                "apply_patch started ({count} file change(s))\nFiles: {file_list}",
+                count = files.len()
+            ))
+        }
+        EventMsg::PatchApplyEnd(event) => {
+            let status = match event.status {
+                PatchApplyStatus::Completed => "completed",
+                PatchApplyStatus::Failed => "failed",
+                PatchApplyStatus::Declined => "declined",
+            };
+            let mut text = format!("apply_patch {status}");
+            if !event.stdout.is_empty() {
+                text.push_str(&format!("\nstdout:\n{}", event.stdout));
+            }
+            if !event.stderr.is_empty() {
+                text.push_str(&format!("\nstderr:\n{}", event.stderr));
+            }
+            Some(text)
+        }
+        _ => None,
+    }
+}
+
+'''
+
+[patches.operation]
+type = "replace"
+text = "// PRIVACY PATCH: Removed realtime event text mapping helper.\n"
+
+# =============================================================================
+# Turn metadata transport removal (core/src/client.rs, core/src/lib.rs)
+# =============================================================================
+
+
+# --- privacy-v0.105-remove-mcp-app-used-analytics-imports
+[[patches]]
+id = "privacy-v0.105-remove-mcp-app-used-analytics-imports"
+file = "core/src/mcp_tool_call.rs"
+
+[patches.query]
+type = "text"
+search = '''
+use crate::analytics_client::AppInvocation;
+use crate::analytics_client::build_track_events_context;
+'''
+
+[patches.operation]
+type = "replace"
+text = "// PRIVACY PATCH: Removed app-used analytics imports.\n"
+
+
+# --- privacy-v0.105-mcp-app-used-helper-noop
+[[patches]]
+id = "privacy-v0.105-mcp-app-used-helper-noop"
+file = "core/src/mcp_tool_call.rs"
+
+[patches.query]
+type = "text"
+search = '''
+async fn maybe_track_codex_app_used(
+    sess: &Session,
+    turn_context: &TurnContext,
+    server: &str,
+    tool_name: &str,
+) {
+    if server != CODEX_APPS_MCP_SERVER_NAME {
+        return;
+    }
+    let metadata = lookup_mcp_app_usage_metadata(sess, server, tool_name).await;
+    let (connector_id, app_name) = metadata
+        .map(|metadata| (metadata.connector_id, metadata.app_name))
+        .unwrap_or((None, None));
+    let invoke_type = if let Some(connector_id) = connector_id.as_deref() {
+        let mentioned_connector_ids = sess.get_connector_selection().await;
+        if mentioned_connector_ids.contains(connector_id) {
+            "explicit"
+        } else {
+            "implicit"
+        }
+    } else {
+        "implicit"
+    };
+
+    let tracking = build_track_events_context(
+        turn_context.model_info.slug.clone(),
+        sess.conversation_id.to_string(),
+        turn_context.sub_id.clone(),
+    );
+    sess.services.analytics_events_client.track_app_used(
+        tracking,
+        AppInvocation {
+            connector_id,
+            app_name,
+            invoke_type: Some(invoke_type.to_string()),
+        },
+    );
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+async fn maybe_track_codex_app_used(
+    sess: &Session,
+    turn_context: &TurnContext,
+    server: &str,
+    tool_name: &str,
+) {
+    let _ = (sess, turn_context, server, tool_name);
+}
+'''
+
+# =============================================================================
+# Realtime override removal (runtime + config)
+# =============================================================================
+
+
+# --- privacy-v0.105-config-toml-remove-realtime-override-keys
+[[patches]]
+id = "privacy-v0.105-config-toml-remove-realtime-override-keys"
+file = "core/src/config/mod.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    /// Base URL for requests to ChatGPT (as opposed to the OpenAI API).
+    pub chatgpt_base_url: Option<String>,
+
+    /// Experimental / do not use. Overrides only the realtime conversation
+    /// websocket transport base URL (the `Op::RealtimeConversation` `/ws`
+    /// connection) without changing normal provider HTTP requests.
+    pub experimental_realtime_ws_base_url: Option<String>,
+    /// Experimental / do not use. Overrides only the realtime conversation
+    /// websocket transport backend prompt (the `Op::RealtimeConversation`
+    /// `/ws` session.create backend_prompt) without changing normal prompts.
+    pub experimental_realtime_ws_backend_prompt: Option<String>,
+    pub projects: Option<HashMap<String, ProjectConfig>>,
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    /// Base URL for requests to ChatGPT (as opposed to the OpenAI API).
+    pub chatgpt_base_url: Option<String>,
+
+    // PRIVACY PATCH: Realtime websocket override keys removed from ConfigToml.
+    pub projects: Option<HashMap<String, ProjectConfig>>,
+'''
+
+
+# --- privacy-v0.105-zsh-wrapper-socket-env-ignored
+[[patches]]
+id = "privacy-v0.105-zsh-wrapper-socket-env-ignored"
+file = "core/src/zsh_exec_bridge/mod.rs"
+
+[patches.query]
+type = "text"
+search = '''
+        let wrapper_socket_path = req
+            .env
+            .get(ZSH_EXEC_BRIDGE_WRAPPER_SOCKET_ENV_VAR)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.next_wrapper_socket_path());
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+        let wrapper_socket_path = self.next_wrapper_socket_path();
+'''
+
+
+# --- privacy-v0.105-zsh-wrapper-mode-requires-full-handshake-env
+[[patches]]
+id = "privacy-v0.105-zsh-wrapper-mode-requires-full-handshake-env"
+file = "core/src/zsh_exec_bridge/mod.rs"
+
+[patches.query]
+type = "text"
+search = '''
+pub fn maybe_run_zsh_exec_wrapper_mode() -> anyhow::Result<bool> {
+    if std::env::var_os(ZSH_EXEC_WRAPPER_MODE_ENV_VAR).is_none() {
+        return Ok(false);
+    }
+
+    run_exec_wrapper_mode()?;
+    Ok(true)
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub fn maybe_run_zsh_exec_wrapper_mode() -> anyhow::Result<bool> {
+    if std::env::var_os(ZSH_EXEC_WRAPPER_MODE_ENV_VAR).is_none() {
+        return Ok(false);
+    }
+    if std::env::var_os(ZSH_EXEC_BRIDGE_WRAPPER_SOCKET_ENV_VAR).is_none() {
+        return Ok(false);
+    }
+
+    #[cfg(not(unix))]
+    {
+        return Ok(false);
+    }
+
+    #[cfg(unix)]
+    if std::env::var_os(EXEC_WRAPPER_ENV_VAR).is_none() {
+        return Ok(false);
+    }
+
+    run_exec_wrapper_mode()?;
+    Ok(true)
+}
+'''
+
+
+# --- privacy-v0.105-remove-legacy-bash-exec-wrapper-export
+[[patches]]
+id = "privacy-v0.105-remove-legacy-bash-exec-wrapper-export"
+file = "exec-server/src/posix/escalate_server.rs"
+
+[patches.query]
+type = "text"
+search = '''
+        env.insert(
+            LEGACY_BASH_EXEC_WRAPPER_ENV_VAR.to_string(),
+            self.execve_wrapper.to_string_lossy().to_string(),
+        );
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+        let _ = LEGACY_BASH_EXEC_WRAPPER_ENV_VAR;
+'''
+

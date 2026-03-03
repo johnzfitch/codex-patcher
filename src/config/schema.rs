@@ -234,6 +234,10 @@ pub struct PatchDefinition {
     pub verify: Option<Verify>,
     #[serde(default)]
     pub constraint: Option<Constraints>,
+    /// Per-patch version constraint (e.g., ">=0.105.0, <0.108.0").
+    /// If specified, patch is skipped when workspace version doesn't match.
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
