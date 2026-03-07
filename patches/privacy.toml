@@ -403,11 +403,11 @@ text = '''
     let prompt = params.prompt;
 '''
 
-# 0.108+: New auth signature and experimental_realtime_ws_model field
+# 0.108-0.111: Startup context via inline match on build_realtime_startup_context
 [[patches]]
 id = "privacy-realtime-remove-overrides-v108"
 file = "core/src/realtime_conversation.rs"
-version = ">=0.108.0-alpha.1"
+version = ">=0.108.0-alpha.1, <0.112.0-alpha.1"
 
 [patches.query]
 type = "text"
@@ -444,6 +444,63 @@ text = '''
             Some(context) => format!("{prompt}\n\n{context}"),
             None => prompt,
         };
+    let model = config.experimental_realtime_ws_model.clone();
+'''
+
+# 0.112+: Startup context reads config.experimental_realtime_ws_startup_context first,
+# then falls back to build_realtime_startup_context
+[[patches]]
+id = "privacy-realtime-remove-overrides-v112"
+file = "core/src/realtime_conversation.rs"
+version = ">=0.112.0-alpha.1"
+
+[patches.query]
+type = "text"
+fuzzy_expansion = 20
+search = '''
+    let config = sess.get_config().await;
+    if let Some(realtime_ws_base_url) = &config.experimental_realtime_ws_base_url {
+        api_provider.base_url = realtime_ws_base_url.clone();
+    }
+    let prompt = config
+        .experimental_realtime_ws_backend_prompt
+        .clone()
+        .unwrap_or(params.prompt);
+    let startup_context = match config.experimental_realtime_ws_startup_context.clone() {
+        Some(startup_context) => startup_context,
+        None => {
+            build_realtime_startup_context(sess.as_ref(), REALTIME_STARTUP_CONTEXT_TOKEN_BUDGET)
+                .await
+                .unwrap_or_default()
+        }
+    };
+    let prompt = if startup_context.is_empty() {
+        prompt
+    } else {
+        format!("{prompt}\n\n{startup_context}")
+    };
+    let model = config.experimental_realtime_ws_model.clone();
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    let config = sess.get_config().await;
+    // PRIVACY PATCH: Removed experimental realtime config overrides.
+    let prompt = params.prompt;
+    let startup_context = match config.experimental_realtime_ws_startup_context.clone() {
+        Some(startup_context) => startup_context,
+        None => {
+            build_realtime_startup_context(sess.as_ref(), REALTIME_STARTUP_CONTEXT_TOKEN_BUDGET)
+                .await
+                .unwrap_or_default()
+        }
+    };
+    let prompt = if startup_context.is_empty() {
+        prompt
+    } else {
+        format!("{prompt}\n\n{startup_context}")
+    };
     let model = config.experimental_realtime_ws_model.clone();
 '''
 
