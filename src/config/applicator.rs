@@ -641,8 +641,6 @@ fn compute_edit_for_patch(
     }
 }
 
-/// Apply a single patch definition (legacy - kept for reference)
-#[allow(dead_code)]
 fn apply_patch(
     patch: &PatchDefinition,
     workspace_root: &Path,
@@ -792,8 +790,6 @@ fn compute_text_edit(
     }
 }
 
-/// Apply a simple text-based patch (legacy - kept for reference)
-#[allow(dead_code)]
 fn apply_text_patch(
     patch: &PatchDefinition,
     file_path: &Path,
@@ -1140,8 +1136,6 @@ fn convert_positioning(pos: &Positioning) -> Result<crate::toml::Positioning, St
     }
 }
 
-/// Apply a structural patch using ast-grep or tree-sitter (legacy - kept for reference)
-#[allow(dead_code)]
 fn apply_structural_patch(
     patch: &PatchDefinition,
     file_path: &Path,
