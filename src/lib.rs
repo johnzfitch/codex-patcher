@@ -42,6 +42,7 @@ pub mod cache;
 pub mod compiler;
 pub mod config;
 pub mod edit;
+pub mod fuzzy;
 pub mod pool;
 pub mod safety;
 pub mod sg;

@@ -1,0 +1,87 @@
+# =============================================================================
+# PRIVACY PATCHES (v0.108.0-alpha.1 and later)
+# =============================================================================
+#
+# Privacy hardening for codex-rs 0.108.x and later.
+# Addresses API changes and new privacy concerns introduced in 0.108.
+#
+# Key changes from 0.105:
+# - Auth signature changed from `auth.as_ref().map(CodexAuth::auth_mode)` to
+#   `Some(crate::auth::AuthMode::ApiKey)` in realtime conversation handling.
+# - Added `experimental_realtime_ws_model` config field.
+# - Several helper functions renamed/removed.
+#
+# =============================================================================
+
+[meta]
+name = "privacy-patches-v0.108-alpha"
+description = "Privacy hardening for 0.108.0-alpha.1+: realtime config overrides, analytics, turn metadata"
+version_range = ">=0.108.0-alpha.1"
+workspace_relative = true
+
+# =============================================================================
+# Realtime conversation: Remove experimental config overrides
+# =============================================================================
+
+[[patches]]
+id = "privacy-v0.108-realtime-handle-start-remove-overrides"
+file = "core/src/realtime_conversation.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    let config = sess.get_config().await;
+    if let Some(realtime_ws_base_url) = &config.experimental_realtime_ws_base_url {
+        api_provider.base_url = realtime_ws_base_url.clone();
+    }
+    let prompt = config
+        .experimental_realtime_ws_backend_prompt
+        .clone()
+        .unwrap_or(params.prompt);
+    let model = config.experimental_realtime_ws_model.clone();
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    let config = sess.get_config().await;
+    // PRIVACY PATCH: Removed experimental_realtime_ws_base_url and backend_prompt overrides.
+    let prompt = params.prompt;
+    let model = config.experimental_realtime_ws_model.clone();
+'''
+
+# =============================================================================
+# Realtime conversation: Remove debug logging
+# =============================================================================
+
+[[patches]]
+id = "privacy-v0.108-realtime-remove-text-output-debug-log"
+file = "core/src/realtime_conversation.rs"
+
+[patches.query]
+type = "text"
+search = '''
+                debug!(text = %text, "[realtime-text] realtime conversation text output");
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+                // PRIVACY PATCH: Removed realtime text-output debug logging.
+'''
+
+[[patches]]
+id = "privacy-v0.108-realtime-remove-text-input-debug-log"
+file = "core/src/realtime_conversation.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    debug!(text = %params.text, "[realtime-text] appending realtime conversation text input");
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    // PRIVACY PATCH: Removed realtime text-input debug logging.
+'''

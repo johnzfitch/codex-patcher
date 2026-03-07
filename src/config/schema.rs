@@ -66,12 +66,38 @@ impl PatchConfig {
                         });
                     }
                 }
-                Query::Text { search } => {
+                Query::Text {
+                    search,
+                    fuzzy_threshold,
+                    fuzzy_expansion,
+                } => {
                     if search.trim().is_empty() {
                         issues.push(ValidationIssue::MissingField {
                             patch_id: Some(patch.id.clone()),
                             field: "query.search",
                         });
+                    }
+                    if let Some(threshold) = fuzzy_threshold {
+                        if !(*threshold >= 0.0 && *threshold <= 1.0) {
+                            issues.push(ValidationIssue::InvalidCombo {
+                                patch_id: Some(patch.id.clone()),
+                                message: format!(
+                                    "fuzzy_threshold must be between 0.0 and 1.0, got {}",
+                                    threshold
+                                ),
+                            });
+                        }
+                    }
+                    if let Some(expansion) = fuzzy_expansion {
+                        if *expansion > 200 {
+                            issues.push(ValidationIssue::InvalidCombo {
+                                patch_id: Some(patch.id.clone()),
+                                message: format!(
+                                    "fuzzy_expansion must be <= 200, got {}",
+                                    expansion
+                                ),
+                            });
+                        }
                     }
                 }
             }
@@ -234,6 +260,10 @@ pub struct PatchDefinition {
     pub verify: Option<Verify>,
     #[serde(default)]
     pub constraint: Option<Constraints>,
+    /// Per-patch version constraint (e.g., ">=0.105.0, <0.108.0").
+    /// If specified, patch is skipped when workspace version doesn't match.
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -255,10 +285,20 @@ pub enum Query {
     TreeSitter {
         pattern: String,
     },
-    /// Simple text search - finds exact string match
+    /// Simple text search - finds exact string match (with optional fuzzy fallback)
     Text {
         /// The exact text to search for
         search: String,
+        /// Optional fuzzy match threshold (0.0-1.0). When set, enables fuzzy
+        /// matching as a fallback when exact match fails. Higher values require
+        /// closer matches. Typical values: 0.85-0.95. Default: None (exact only).
+        #[serde(default)]
+        fuzzy_threshold: Option<f64>,
+        /// Max lines to expand fuzzy window beyond needle size.
+        /// Handles cases where code was inserted inside the needle's span.
+        /// Default: None (fixed window = needle size, current behavior).
+        #[serde(default)]
+        fuzzy_expansion: Option<usize>,
     },
 }
 

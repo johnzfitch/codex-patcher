@@ -123,7 +123,78 @@ pattern = '''
 - Matching based on syntax node types
 - Need predicates like `#match?`, `#eq?`
 
-### 3. TOML (For Cargo.toml, config files)
+### 3. Text (Literal String Search with Fuzzy Fallback)
+
+Locates a verbatim string in the target file, with an optional fuzzy fallback when
+upstream code has drifted slightly from the stored search text:
+
+```toml
+[patches.query]
+type = "text"
+search = '''
+    let result = compute();
+    finish(result);
+'''
+fuzzy_threshold = 0.85    # Optional — enables fuzzy fallback (0.0–1.0)
+fuzzy_expansion = 10      # Optional — elastic window for inserted-line drift
+```
+
+**Fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `search` | string | required | Verbatim text to locate. Must match exactly once in the file. |
+| `fuzzy_threshold` | float | `0.85` when fuzzy is active | Minimum normalized Levenshtein similarity (0.0–1.0) to accept a fuzzy match. Only consulted when exact match fails. |
+| `fuzzy_expansion` | integer | `None` | When set, enables the **elastic fuzzy window**: the matcher tries window sizes from `needle_lines` up to `needle_lines + N`. Handles the common case where upstream inserted lines *inside* the needle's span between version bumps. Capped at 200. |
+
+**Exact match always wins.** Fuzzy fallback (and elastic window) are only consulted when
+`content.contains(search)` returns false. Idempotency check still runs first &mdash;
+if the replacement text is already present, the patch reports `AlreadyApplied` without
+touching the file.
+
+**`fuzzy_expansion` explained:**
+
+The standard Levenshtein fuzzy matcher uses a sliding window of exactly `needle.lines().count()` lines.
+If upstream inserted N new lines *inside* the needle&rsquo;s span, no fixed-size window can
+contain both the opening and closing anchors:
+
+```
+ v0.108 search text (4 lines)        v0.112 target (6 lines)
+ ─────────────────────────────        ─────────────────────────────
+  fn handle() {                        fn handle() {
+      let x = setup();         →           let x = setup();
+      let y = work(x);                     // inserted A          ← new
+      finish(y);                           // inserted B          ← new
+  }                                        let y = work(x);
+                                           finish(y);
+                                       }
+```
+
+With `fuzzy_expansion = 2`, the matcher also tries 5-line and 6-line windows.
+The 6-line window captures both anchors and scores higher than any 4-line window,
+letting the patch apply correctly at the configured threshold.
+
+> [!TIP]
+> Set `fuzzy_expansion` proactively on patches that span regions where upstream
+> frequently inserts logging, instrumentation, or handler blocks between version bumps.
+> Values between `5` and `25` cover most real-world drift.
+
+**When to use text queries:**
+- Patching code that doesn&rsquo;t map cleanly to an AST node boundary (e.g. a block
+  of statements, not a whole function)
+- When the surrounding context changes frequently and AST patterns become brittle
+- Hotfixes against a specific known version where the exact text is well-defined
+
+**When to use `fuzzy_threshold`:**
+- The target version is pinned but whitespace or minor phrasing differs
+- You want patches to survive minor upstream reformatting
+
+**When to use `fuzzy_expansion`:**
+- The target region spans multiple lines and upstream inserts lines *between* anchors
+  across version bumps (new logging, feature flags, early-return guards, etc.)
+- You want a single patch definition that survives N versions of growth
+
+### 4. TOML (For Cargo.toml, config files)
 
 Structure-preserving TOML edits:
 
@@ -390,17 +461,46 @@ OtelExporter::None
 
 ### 3. Version Constraints
 
+**File-level** `version_range` in `[meta]` gates the entire patch file:
+
+```toml
+[meta]
+version_range = ">=0.108.0-alpha.1"
+```
+
+**Per-patch** `version` field skips individual patches when the workspace doesn&rsquo;t
+match, while the rest of the file still runs. Preferred for consolidated patch files
+that target multiple version ranges:
+
+```toml
+[[patches]]
+id = "feature-for-new-api"
+version = ">=0.108.0-alpha.1"
+file = "core/src/realtime_conversation.rs"
+# ...
+
+[[patches]]
+id = "legacy-compat"
+version = ">=0.105.0-alpha.13, <0.108.0-alpha.1"
+file = "core/src/realtime_conversation.rs"
+# ...
+```
+
+The applicator reports `SkippedVersion` (not an error) for patches whose `version`
+constraint isn&rsquo;t satisfied. Both pre-release qualifiers (`0.108.0-alpha.1`) and
+compound ranges (`>=A, <B`) are supported.
+
 Be specific about version ranges:
 
 ```toml
 # Good - specific range
-version_range = ">=0.88.0, <0.90.0"
+version = ">=0.88.0, <0.90.0"
 
 # Acceptable - open-ended
-version_range = ">=0.88.0"
+version = ">=0.108.0-alpha.1"
 
-# Avoid - too broad
-version_range = "*"
+# Avoid - too broad (use file-level version_range = "*" instead)
+version = ">=0.0.0"
 ```
 
 ### 4. Idempotency

@@ -1,0 +1,320 @@
+# =============================================================================
+# IO-DRAIN INTERPRETABILITY - Instrument the exec pipeline for observability
+# =============================================================================
+#
+# Adds tracing hooks to the actual functions in the IO drain path so the
+# behavior is observable end-to-end when running codex normally. No synthetic
+# tests — just run any tool that backgrounds a subprocess and the logs show
+# exactly what happens at each stage.
+#
+# Instrumentation points:
+# 1. read_capped — logs each read() and running buffer size
+# 2. read_capped return — logs final buffer size at EOF
+# 3. await_with_timeout timeout — logs that buffered data will be destroyed
+# 4. child.wait() — logs when child exits (pipes may still be open)
+# 5. consume_truncated_output — logs what the model actually receives
+# 6. exec_drain_trace test — exercises the path, hooks tell the story
+#
+# Version: Targets Codex rust-v0.108.0-alpha.4 and later
+# =============================================================================
+
+[meta]
+name = "io-drain-interp"
+description = "Instrument the IO drain pipeline for end-to-end observability"
+version_range = ">=0.0.0"
+workspace_relative = true
+
+# =============================================================================
+# Patch 1: Instrument read_capped — log each read and final buffer size
+#
+# NOTE: ID prefixed with "a-" so it applies BEFORE patches that modify
+# consume_truncated_output (which shares the closing "}" boundary).
+# =============================================================================
+
+[[patches]]
+id = "1-read-capped-accumulation"
+file = "core/src/exec.rs"
+
+[patches.query]
+type = "text"
+search = '''
+        append_capped(&mut buf, &tmp[..n], EXEC_OUTPUT_MAX_BYTES);
+        // Continue reading to EOF to avoid back-pressure
+    }
+
+    Ok(StreamOutput {
+        text: buf,
+        truncated_after_lines: None,
+    })
+}
+
+#[cfg(unix)]
+fn synthetic_exit_status(code: i32) -> ExitStatus {
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+        append_capped(&mut buf, &tmp[..n], EXEC_OUTPUT_MAX_BYTES);
+        tracing::debug!(
+            stream = if is_stderr { "stderr" } else { "stdout" },
+            chunk_bytes = n,
+            buffer_bytes = buf.len(),
+            "read_capped: read chunk, buffer now {} bytes",
+            buf.len(),
+        );
+        // Continue reading to EOF to avoid back-pressure
+    }
+
+    tracing::info!(
+        stream = if is_stderr { "stderr" } else { "stdout" },
+        final_bytes = buf.len(),
+        "read_capped: EOF reached, returning {} bytes to caller",
+        buf.len(),
+    );
+    Ok(StreamOutput {
+        text: buf,
+        truncated_after_lines: None,
+    })
+}
+
+#[cfg(unix)]
+fn synthetic_exit_status(code: i32) -> ExitStatus {
+'''
+
+# =============================================================================
+# Patch 2: Instrument await_with_timeout — log the discard
+# =============================================================================
+
+[[patches]]
+id = "2-await-with-timeout-discard"
+file = "core/src/exec.rs"
+
+[patches.query]
+type = "text"
+search = '''
+            Err(_elapsed) => {
+                // Timeout: abort the task to avoid hanging on open pipes.
+                handle.abort();
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+            Err(_elapsed) => {
+                // Timeout: abort the task to avoid hanging on open pipes.
+                // INTERP: The read task's buffer is task-local (Vec<u8>).
+                // abort() drops the task AND the buffer. All data is lost.
+                // The caller receives Vec::new() with no truncation signal.
+                tracing::warn!(
+                    timeout_ms = IO_DRAIN_TIMEOUT_MS,
+                    "IO_DRAIN_TIMEOUT: pipe still open after {}ms — \
+                     aborting read task. Task-local buffer will be DROPPED. \
+                     Model will receive empty output with truncated=None.",
+                    IO_DRAIN_TIMEOUT_MS,
+                );
+                handle.abort();
+'''
+
+# =============================================================================
+# Patch 3: Instrument child.wait() — log when child exits
+# =============================================================================
+
+[[patches]]
+id = "3-child-wait-pipe-state"
+file = "core/src/exec.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    let (exit_status, timed_out) = tokio::select! {
+        status_result = child.wait() => {
+            let exit_status = status_result?;
+            (exit_status, false)
+        }
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    let (exit_status, timed_out) = tokio::select! {
+        status_result = child.wait() => {
+            let exit_status = status_result?;
+            tracing::info!(
+                exit_code = exit_status.code(),
+                "child process exited — read tasks may still be \
+                 waiting for EOF if grandchildren hold pipes open",
+            );
+            (exit_status, false)
+        }
+'''
+
+# =============================================================================
+# Patch 4: Instrument consume_truncated_output — log what model receives
+# =============================================================================
+
+[[patches]]
+id = "4-consume-output-final"
+file = "core/src/exec.rs"
+
+[patches.query]
+type = "text"
+search = '''
+    let aggregated_output = aggregate_output(&stdout, &stderr);
+
+    Ok(RawExecToolCallOutput {
+        exit_status,
+        stdout,
+        stderr,
+        aggregated_output,
+        timed_out,
+    })
+}
+
+async fn read_capped<R: AsyncRead + Unpin + Send + 'static>(
+    mut reader: R,
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+    let aggregated_output = aggregate_output(&stdout, &stderr);
+
+    tracing::info!(
+        stdout_bytes = stdout.text.len(),
+        stderr_bytes = stderr.text.len(),
+        timed_out = timed_out,
+        exit_code = exit_status.code(),
+        stdout_truncated = ?stdout.truncated_after_lines,
+        stderr_truncated = ?stderr.truncated_after_lines,
+        "MODEL RECEIVES: stdout={} bytes, stderr={} bytes, \
+         timed_out={}, truncated={:?}",
+        stdout.text.len(),
+        stderr.text.len(),
+        timed_out,
+        stdout.truncated_after_lines,
+    );
+
+    Ok(RawExecToolCallOutput {
+        exit_status,
+        stdout,
+        stderr,
+        aggregated_output,
+        timed_out,
+    })
+}
+
+async fn read_capped<R: AsyncRead + Unpin + Send + 'static>(
+    mut reader: R,
+'''
+
+# =============================================================================
+# Patch 5: Add exec_drain_trace test — exercises path, hooks tell the story
+# =============================================================================
+
+[[patches]]
+id = "5-exec-drain-exercise"
+file = "core/src/exec.rs"
+
+[patches.query]
+type = "text"
+search = '''
+        assert!(killed, "grandchild process with pid {pid} is still alive");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn process_exec_tool_call_respects_cancellation_token() -> Result<()> {
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+        assert!(killed, "grandchild process with pid {pid} is still alive");
+        Ok(())
+    }
+
+    /// Runs a realistic tool command through the exec pipeline.
+    /// No assertions — the tracing hooks on read_capped,
+    /// await_with_timeout, and consume_truncated_output log
+    /// exactly what happens at each stage.
+    ///
+    /// Run with: RUST_LOG=codex_core::exec=debug cargo test \
+    ///   -p codex-core --lib exec_drain_trace -- --nocapture
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_drain_trace() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp_dir = std::env::temp_dir().join("drain_trace");
+        let _ = std::fs::create_dir_all(&tmp_dir);
+
+        let src_file = tmp_dir.join("handler.rs");
+        std::fs::write(
+            &src_file,
+            "use std::net::TcpStream;\n\n\
+             fn handle(stream: TcpStream) {\n\
+             \x20   // TODO: validate input\n\
+             \x20   let data = read_all(&stream);\n\
+             \x20   // TODO: add rate limiting\n\
+             \x20   process(data);\n\
+             }\n",
+        )?;
+
+        let tool = tmp_dir.join("search_todos.sh");
+        std::fs::write(
+            &tool,
+            format!(
+                "#!/bin/bash\n\
+                 grep -n TODO \"{}\" 2>/dev/null\n\
+                 ( sleep 5 ) &\n\
+                 exit $?\n",
+                src_file.display()
+            ),
+        )?;
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755))?;
+
+        let params = ExecParams {
+            command: vec![tool.to_string_lossy().to_string()],
+            cwd: tmp_dir.clone(),
+            expiration: 10_000.into(),
+            env: std::env::vars().collect(),
+            network: None,
+            sandbox_permissions: SandboxPermissions::UseDefault,
+            windows_sandbox_level:
+                codex_protocol::config_types::WindowsSandboxLevel::Disabled,
+            justification: None,
+            arg0: None,
+        };
+
+        let output = exec(
+            params,
+            SandboxType::None,
+            &SandboxPolicy::new_read_only_policy(),
+            None,
+        )
+        .await?;
+
+        let stdout_text = String::from_utf8_lossy(&output.stdout.text);
+        eprintln!(
+            "\n--- exec_drain_trace result ---\n\
+             exit_code:  {:?}\n\
+             timed_out:  {}\n\
+             stdout_len: {} bytes\n\
+             stdout:     {:?}\n\
+             truncated:  {:?}\n\
+             ---",
+            output.exit_status.code(),
+            output.timed_out,
+            output.stdout.text.len(),
+            stdout_text,
+            output.stdout.truncated_after_lines,
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn process_exec_tool_call_respects_cancellation_token() -> Result<()> {
+'''

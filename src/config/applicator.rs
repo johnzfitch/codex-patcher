@@ -18,6 +18,26 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Check if a patch should be skipped based on its per-patch version constraint.
+/// Returns `Some(reason)` if the patch should be skipped, `None` if it should be applied.
+fn check_patch_version(
+    patch: &PatchDefinition,
+    workspace_version: &str,
+) -> Result<Option<String>, ApplicationError> {
+    let version_req = match patch.version.as_deref() {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+    match matches_requirement(workspace_version, Some(version_req)) {
+        Ok(true) => Ok(None), // Version matches, apply the patch
+        Ok(false) => Ok(Some(format!(
+            "patch version {} not satisfied by workspace {}",
+            version_req, workspace_version
+        ))),
+        Err(e) => Err(ApplicationError::Version(e)),
+    }
+}
+
 /// Result of applying a single patch
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "PatchResult should be checked for success/failure"]
@@ -181,7 +201,7 @@ pub fn check_patches(
     workspace_version: &str,
 ) -> Vec<(String, Result<PatchResult, ApplicationError>)> {
     match matches_requirement(workspace_version, config.meta.version_range.as_deref()) {
-        Ok(true) => check_patches_batched(config, workspace_root),
+        Ok(true) => check_patches_batched(config, workspace_root, workspace_version),
         Ok(false) => {
             let req = config.meta.version_range.as_deref().unwrap_or("").trim();
             let reason = if req.is_empty() {
@@ -216,6 +236,7 @@ pub fn check_patches(
 fn check_patches_batched(
     config: &PatchConfig,
     workspace_root: &Path,
+    workspace_version: &str,
 ) -> Vec<(String, Result<PatchResult, ApplicationError>)> {
     use std::collections::HashMap;
 
@@ -267,6 +288,20 @@ fn check_patches_batched(
         let mut immediate_results = Vec::new();
 
         for patch in patches {
+            // Check per-patch version constraint
+            match check_patch_version(patch, workspace_version) {
+                Err(e) => {
+                    immediate_results.push((patch.id.clone(), Err(e)));
+                    continue;
+                }
+                Ok(Some(reason)) => {
+                    immediate_results
+                        .push((patch.id.clone(), Ok(PatchResult::SkippedVersion { reason })));
+                    continue;
+                }
+                Ok(None) => {}
+            }
+
             match &patch.query {
                 Query::Toml { .. } => {
                     immediate_results.push((
@@ -434,6 +469,19 @@ fn apply_patches_batched(
             .any(|patch| matches!(&patch.query, Query::Toml { .. }))
         {
             for patch in patches {
+                // Check per-patch version constraint
+                match check_patch_version(patch, workspace_version) {
+                    Err(e) => {
+                        all_results.push((patch.id.clone(), Err(e)));
+                        continue;
+                    }
+                    Ok(Some(reason)) => {
+                        all_results
+                            .push((patch.id.clone(), Ok(PatchResult::SkippedVersion { reason })));
+                        continue;
+                    }
+                    Ok(None) => {}
+                }
                 all_results.push((
                     patch.id.clone(),
                     apply_patch(
@@ -444,6 +492,33 @@ fn apply_patches_batched(
                     ),
                 ));
             }
+            continue;
+        }
+
+        // Drain version-skipped patches before the file-existence check so a
+        // patch targeting a file removed in a newer version returns
+        // SkippedVersion instead of NoMatch.
+        let patches: Vec<_> = patches
+            .into_iter()
+            .filter(|patch| {
+                match check_patch_version(patch, workspace_version) {
+                    Err(e) => {
+                        all_results.push((patch.id.clone(), Err(e)));
+                        false
+                    }
+                    Ok(Some(reason)) => {
+                        all_results.push((
+                            patch.id.clone(),
+                            Ok(PatchResult::SkippedVersion { reason }),
+                        ));
+                        false
+                    }
+                    Ok(None) => true,
+                }
+            })
+            .collect();
+
+        if patches.is_empty() {
             continue;
         }
 
@@ -555,7 +630,18 @@ fn compute_edit_for_patch(
     content: &str,
 ) -> Result<Edit, ApplicationError> {
     match &patch.query {
-        Query::Text { search } => compute_text_edit(patch, file_path, content, search),
+        Query::Text {
+            search,
+            fuzzy_threshold,
+            fuzzy_expansion,
+        } => compute_text_edit(
+            patch,
+            file_path,
+            content,
+            search,
+            *fuzzy_threshold,
+            *fuzzy_expansion,
+        ),
         Query::AstGrep { pattern } => {
             compute_structural_edit(patch, file_path, content, pattern, true)
         }
@@ -569,8 +655,6 @@ fn compute_edit_for_patch(
     }
 }
 
-/// Apply a single patch definition (legacy - kept for reference)
-#[allow(dead_code)]
 fn apply_patch(
     patch: &PatchDefinition,
     workspace_root: &Path,
@@ -609,7 +693,18 @@ fn apply_patch(
         Query::TreeSitter { pattern } => {
             apply_structural_patch(patch, &file_path, &content, pattern, false)
         }
-        Query::Text { search } => apply_text_patch(patch, &file_path, &content, search),
+        Query::Text {
+            search,
+            fuzzy_threshold,
+            fuzzy_expansion,
+        } => apply_text_patch(
+            patch,
+            &file_path,
+            &content,
+            search,
+            *fuzzy_threshold,
+            *fuzzy_expansion,
+        ),
     }
 }
 
@@ -619,6 +714,8 @@ fn compute_text_edit(
     file_path: &Path,
     content: &str,
     search: &str,
+    fuzzy_threshold: Option<f64>,
+    fuzzy_expansion: Option<usize>,
 ) -> Result<Edit, ApplicationError> {
     // Check if the search text exists in the file
     if !content.contains(search) {
@@ -637,6 +734,41 @@ fn compute_text_edit(
                 ));
             }
         }
+
+        // Fuzzy fallback: only when the user has explicitly opted in via threshold or expansion.
+        if fuzzy_threshold.is_none() && fuzzy_expansion.is_none() {
+            return Err(ApplicationError::NoMatch {
+                file: file_path.to_path_buf(),
+            });
+        }
+        let threshold = fuzzy_threshold.unwrap_or(0.85);
+        let fuzzy_result = match fuzzy_expansion {
+            Some(expansion) => {
+                crate::fuzzy::find_best_match_elastic(search, content, threshold, expansion)
+            }
+            None => crate::fuzzy::find_best_match(search, content, threshold),
+        };
+        if let Some(fuzzy) = fuzzy_result {
+            eprintln!(
+                "  [fuzzy] patch '{}': exact match failed, using fuzzy match (score: {:.2})",
+                patch.id, fuzzy.score
+            );
+
+            return match &patch.operation {
+                Operation::Replace { text } => Ok(Edit::new(
+                    file_path,
+                    fuzzy.start,
+                    fuzzy.end,
+                    text.clone(),
+                    fuzzy.matched_text,
+                )),
+                _ => Err(ApplicationError::TomlOperation {
+                    file: file_path.to_path_buf(),
+                    reason: "Text queries only support 'replace' operation".to_string(),
+                }),
+            };
+        }
+
         return Err(ApplicationError::NoMatch {
             file: file_path.to_path_buf(),
         });
@@ -672,15 +804,22 @@ fn compute_text_edit(
     }
 }
 
-/// Apply a simple text-based patch (legacy - kept for reference)
-#[allow(dead_code)]
 fn apply_text_patch(
     patch: &PatchDefinition,
     file_path: &Path,
     content: &str,
     search: &str,
+    fuzzy_threshold: Option<f64>,
+    fuzzy_expansion: Option<usize>,
 ) -> Result<PatchResult, ApplicationError> {
-    let edit = compute_text_edit(patch, file_path, content, search)?;
+    let edit = compute_text_edit(
+        patch,
+        file_path,
+        content,
+        search,
+        fuzzy_threshold,
+        fuzzy_expansion,
+    )?;
     let _ = edit.apply().map_err(ApplicationError::Edit)?;
 
     Ok(PatchResult::Applied {
@@ -1011,8 +1150,6 @@ fn convert_positioning(pos: &Positioning) -> Result<crate::toml::Positioning, St
     }
 }
 
-/// Apply a structural patch using ast-grep or tree-sitter (legacy - kept for reference)
-#[allow(dead_code)]
 fn apply_structural_patch(
     patch: &PatchDefinition,
     file_path: &Path,

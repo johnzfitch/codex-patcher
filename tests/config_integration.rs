@@ -243,6 +243,7 @@ fn test_apply_patches_file_not_found() {
             },
             verify: None,
             constraint: None,
+            version: None,
         }],
     };
 
@@ -292,6 +293,7 @@ fn test_idempotency_check_logic() {
             },
             verify: None,
             constraint: None,
+            version: None,
         }],
     };
 
@@ -553,11 +555,9 @@ text = "fn b() { println!(\"b\"); }"
 fn test_v099_ranges_against_v0100_alpha2() {
     let patch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     // Bounded 0.99-alpha ranges must NOT match 0.100 (upper bound blocks it).
-    let cases = [
-        ("patches/privacy-v0.99.toml", false),
-        ("patches/sandbox-metrics.toml", false),
-        ("patches/privacy-v0.105-alpha13.toml", false),
-    ];
+    // Note: privacy-v0.99.toml and privacy-v0.105-alpha13.toml were merged into
+    // unified privacy.toml which uses per-patch version constraints instead.
+    let cases = [("patches/archived/sandbox-metrics.toml", false)];
 
     for (relative, expected) in cases {
         let config = load_from_path(patch_root.join(relative)).expect("patch file must load");
@@ -573,11 +573,10 @@ fn test_v099_ranges_against_v0100_alpha2() {
 #[test]
 fn test_sandbox_metric_patch_ranges_are_mutually_exclusive() {
     let patch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let patch_files = [
-        "patches/sandbox-metrics.toml",
-        "patches/privacy-v0.99.toml",
-        "patches/privacy-v0.105-alpha13.toml",
-    ];
+    // Note: privacy-v0.99.toml and privacy-v0.105-alpha13.toml were merged into
+    // unified privacy.toml which uses per-patch version constraints instead.
+    // This test now only validates sandbox-metrics.toml standalone.
+    let patch_files = ["patches/archived/sandbox-metrics.toml"];
     let patch_configs: Vec<_> = patch_files
         .iter()
         .map(|relative| {
@@ -587,10 +586,8 @@ fn test_sandbox_metric_patch_ranges_are_mutually_exclusive() {
         .collect();
 
     for version in [
-        "0.99.0-alpha.11",
-        "0.99.0-alpha.14",
-        "0.99.0-alpha.18",
-        "0.99.0-alpha.23",
+        "0.99.0-alpha.5",
+        "0.99.0-alpha.9",
         "0.100.0-alpha.2",
         "0.105.0-alpha.13",
     ] {
