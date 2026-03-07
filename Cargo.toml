@@ -5,6 +5,19 @@ edition = "2021"
 authors = ["Codex Patcher Contributors"]
 description = "Automated code patching system for Rust with byte-span replacement and tree-sitter integration"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/johnzfitch/codex-patcher"
+documentation = "https://docs.rs/codex-patcher"
+homepage = "https://github.com/johnzfitch/codex-patcher"
+readme = "README.md"
+keywords = ["patching", "tree-sitter", "ast-grep", "code-generation", "automation"]
+categories = ["development-tools", "command-line-utilities"]
+exclude = [
+    "db/",
+    "watcher/",
+    "scripts/__pycache__/",
+    "patches/archived/",
+    "archive/",
+]
 
 [dependencies]
 # Core patching - use ast-grep-language for built-in Rust support
