@@ -183,3 +183,22 @@ search = 'reqwest = { workspace = true }'
 [patches.operation]
 type = "replace"
 text = 'reqwest = { workspace = true, default-features = false, features = ["rustls-tls-native-roots"] }'
+
+# =============================================================================
+# Cargo.toml (workspace root)
+# =============================================================================
+# Cargo 1.84+ forbids `default-features = false` on a workspace-inherited dep
+# when the workspace definition itself has default-features enabled (implicit or
+# explicit). Setting it here satisfies the constraint for all inheriting members.
+
+[[patches]]
+id = "native-ca-workspace-reqwest"
+file = "Cargo.toml"
+
+[patches.query]
+type = "text"
+search = 'reqwest = "0.12"'
+
+[patches.operation]
+type = "replace"
+text = 'reqwest = { version = "0.12", default-features = false }'

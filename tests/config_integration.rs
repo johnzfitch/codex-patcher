@@ -552,6 +552,66 @@ text = "fn b() { println!(\"b\"); }"
 }
 
 #[test]
+fn test_apply_patches_append_section_batched() {
+    let workspace = setup_test_workspace();
+
+    // Cargo.toml has [package] and [profile.release] but NOT [profile.dev].
+    let toml_path = workspace.path().join("Cargo.toml");
+
+    let config = PatchConfig {
+        meta: Metadata {
+            name: "test".to_string(),
+            description: None,
+            version_range: None,
+            workspace_relative: true,
+        },
+        patches: vec![PatchDefinition {
+            id: "append-dev-profile".to_string(),
+            file: "Cargo.toml".to_string(),
+            query: Query::Toml {
+                section: Some("profile.dev".to_string()),
+                key: None,
+                ensure_absent: false,
+                ensure_present: false,
+            },
+            operation: Operation::AppendSection {
+                text: "[profile.dev]\nopt-level = 0\n".to_string(),
+            },
+            verify: None,
+            constraint: None,
+            version: None,
+        }],
+    };
+
+    // First application: section is absent → should be appended.
+    let results = apply_patches(&config, workspace.path(), "0.88.0");
+    assert_eq!(results.len(), 1);
+    let (id, result) = &results[0];
+    assert_eq!(id, "append-dev-profile");
+    assert!(
+        matches!(result, Ok(PatchResult::Applied { .. })),
+        "expected Applied, got {result:?}"
+    );
+
+    let content = fs::read_to_string(&toml_path).unwrap();
+    assert!(
+        content.contains("[profile.dev]"),
+        "section was not appended: {content}"
+    );
+    assert!(content.contains("opt-level = 0"));
+
+    // Second application: section now exists → should be a no-op.
+    let results2 = apply_patches(&config, workspace.path(), "0.88.0");
+    assert_eq!(results2.len(), 1);
+    let (id2, result2) = &results2[0];
+    assert_eq!(id2, "append-dev-profile");
+    assert!(
+        matches!(result2, Ok(PatchResult::AlreadyApplied { .. })),
+        "expected AlreadyApplied on second run, got {result2:?}"
+    );
+}
+
+#[test]
 fn test_v099_ranges_against_v0100_alpha2() {
     let patch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     // Bounded 0.99-alpha ranges must NOT match 0.100 (upper bound blocks it).

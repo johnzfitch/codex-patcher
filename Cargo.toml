@@ -1,6 +1,6 @@
 [package]
 name = "codex-patcher"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Codex Patcher Contributors"]
 description = "Automated code patching system for Rust with byte-span replacement and tree-sitter integration"
