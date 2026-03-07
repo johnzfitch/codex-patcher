@@ -93,6 +93,39 @@ pub enum EditError {
     InvalidUtf8Edit,
 }
 
+impl Clone for EditError {
+    fn clone(&self) -> Self {
+        match self {
+            Self::BeforeTextMismatch {
+                file,
+                byte_start,
+                byte_end,
+                expected,
+                found,
+            } => Self::BeforeTextMismatch {
+                file: file.clone(),
+                byte_start: *byte_start,
+                byte_end: *byte_end,
+                expected: expected.clone(),
+                found: found.clone(),
+            },
+            Self::InvalidByteRange {
+                byte_start,
+                byte_end,
+                file_len,
+            } => Self::InvalidByteRange {
+                byte_start: *byte_start,
+                byte_end: *byte_end,
+                file_len: *file_len,
+            },
+            Self::OutsideWorkspace(p) => Self::OutsideWorkspace(p.clone()),
+            Self::Io(e) => Self::Io(std::io::Error::new(e.kind(), e.to_string())),
+            Self::Utf8(e) => Self::Utf8(*e),
+            Self::InvalidUtf8Edit => Self::InvalidUtf8Edit,
+        }
+    }
+}
+
 /// Result of applying an edit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "EditResult should be checked for success/already-applied"]

@@ -1,0 +1,117 @@
+# =============================================================================
+# PROXY INTERCEPT - Hardcode MITM Proxy into Binary
+# =============================================================================
+#
+# Patches reqwest client builders to route all HTTPS traffic through a local
+# proxy. Controlled via environment variable (no visible env in ps/proc).
+#
+# Environment variables:
+#   CODEX_INTERCEPT_PROXY=1     Enable proxy routing (required)
+#   CODEX_INTERCEPT_PORT=8181   Proxy port (optional, default: 8181)
+#
+# Proxy address: 127.0.0.1:<port> where port = CODEX_INTERCEPT_PORT env (default: 8181)
+# Traffic log: ~/.codex/intercept.log (append mode)
+#
+# Requires: native-ca-roots.toml patch (for CA trust)
+#
+# Usage:
+#   1. Apply both patches: native-ca-roots + proxy-intercept
+#   2. Rebuild codex
+#   3. Add mitmproxy CA to system trust: sudo trust anchor ~/.mitmproxy/mitmproxy-ca-cert.pem
+#   4. Start mitmproxy: mitmproxy -p 8181 --save-stream-file ~/.codex/intercept.flow
+#   5. Enable: export CODEX_INTERCEPT_PROXY=1 (or add to config.toml)
+#   6. Run codex
+#   7. View traffic: tail -f ~/.codex/intercept.log OR mitmweb to view .flow
+#
+# Files modified:
+# - core/src/default_client.rs: Add proxy to build_reqwest_client()
+# - backend-client/src/client.rs: Add proxy to Client::new()
+#
+# Version: Targets Codex rust-v0.108.0-alpha.1 and later
+# =============================================================================
+
+[meta]
+name = "proxy-intercept"
+description = "Hardcode local MITM proxy into reqwest clients for traffic inspection"
+version_range = ">=0.108.0-alpha.1"
+workspace_relative = true
+
+# =============================================================================
+# core/src/default_client.rs - Main client builder
+# =============================================================================
+
+[[patches]]
+id = "proxy-intercept-core-client"
+file = "core/src/default_client.rs"
+
+[patches.query]
+type = "text"
+search = '''pub fn build_reqwest_client() -> reqwest::Client {
+    let ua = get_codex_user_agent();
+
+    let mut builder = reqwest::Client::builder()
+        // Set UA via dedicated helper to avoid header validation pitfalls
+        .user_agent(ua)
+        .default_headers(default_headers());
+    if is_sandboxed() {
+        builder = builder.no_proxy();
+    }
+
+    builder.build().unwrap_or_else(|_| reqwest::Client::new())
+}'''
+
+[patches.operation]
+type = "replace"
+text = '''pub fn build_reqwest_client() -> reqwest::Client {
+    let ua = get_codex_user_agent();
+
+    let mut builder = reqwest::Client::builder()
+        // Set UA via dedicated helper to avoid header validation pitfalls
+        .user_agent(ua)
+        .default_headers(default_headers());
+    if is_sandboxed() {
+        builder = builder.no_proxy();
+    }
+
+    // INTERCEPT PATCH: Route through local proxy if enabled
+    let intercept_enabled = std::env::var("CODEX_INTERCEPT_PROXY")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
+    if intercept_enabled {
+        let port = std::env::var("CODEX_INTERCEPT_PORT").unwrap_or_else(|_| "8181".to_string());
+        let proxy_url = format!("http://127.0.0.1:{}", port);
+        if let Ok(proxy) = reqwest::Proxy::https(&proxy_url) {
+            builder = builder.proxy(proxy);
+        }
+    }
+
+    builder.build().unwrap_or_else(|_| reqwest::Client::new())
+}'''
+
+# =============================================================================
+# backend-client/src/client.rs - Backend API client
+# =============================================================================
+
+[[patches]]
+id = "proxy-intercept-backend-client"
+file = "backend-client/src/client.rs"
+
+[patches.query]
+type = "text"
+search = '        let http = reqwest::Client::builder().build()?;'
+
+[patches.operation]
+type = "replace"
+text = '''        // INTERCEPT PATCH: Route through local proxy if enabled
+        let intercept_enabled = std::env::var("CODEX_INTERCEPT_PROXY")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false);
+        let mut builder = reqwest::Client::builder();
+        if intercept_enabled {
+            let port = std::env::var("CODEX_INTERCEPT_PORT").unwrap_or_else(|_| "8181".to_string());
+            let proxy_url = format!("http://127.0.0.1:{}", port);
+            if let Ok(proxy) = reqwest::Proxy::https(&proxy_url) {
+                builder = builder.proxy(proxy);
+            }
+        }
+        let http = builder.build()?;'''

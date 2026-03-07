@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Compact test runner.
+#
+# Prints one summary line per test binary.  Individual test names are shown
+# only when they fail.  Pass any extra arguments through to cargo test, e.g.
+#   scripts/test --test integration
+#   scripts/test -- config::applicator
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+cargo test --all-targets "$@" 2>&1 | awk '
+BEGIN {
+    binary     = ""
+    fails      = ""
+    any_fail   = 0
+    total_pass = 0
+    total_fail = 0
+    any_result = 0   # set when at least one "test result:" line is seen
+}
+
+# ── Binary label ─────────────────────────────────────────────────────────────
+/^     Running / {
+    line = $0
+    gsub(/^[ \t]+Running /, "", line)
+    gsub(/ \(.*\)$/, "",      line)   # strip "(target/...)" suffix
+    gsub(/^unittests /,  "",  line)   # "unittests src/lib.rs" -> "src/lib.rs"
+    gsub(/^tests\//,     "",  line)   # strip "tests/" prefix
+    gsub(/\.rs$/,        "",  line)   # strip extension
+    gsub(/\/mod$/,       "",  line)   # "integration/mod" -> "integration"
+    binary = line
+    fails  = ""
+}
+
+# ── Collect failing test names ────────────────────────────────────────────────
+/\.\.\. FAILED$/ {
+    fails    = fails "\n        " $2
+    any_fail = 1
+}
+
+# ── Emit one summary line per binary ─────────────────────────────────────────
+/^test result: / {
+    any_result = 1
+    pass = 0; fail = 0
+    for (i = 1; i <= NF; i++) {
+        if ($(i+1) == "passed;") pass = $i + 0
+        if ($(i+1) == "failed;") fail = $i + 0
+    }
+    if (fail > 0)
+        printf "\033[31m FAIL \033[0m  %-40s  %d ok  \033[31m%d FAILED\033[0m%s\n", \
+               binary, pass, fail, fails
+    else if (pass > 0)
+        printf "  ok   %-40s  %d tests\n", binary, pass
+    total_pass += pass
+    total_fail += fail
+    fails = ""
+}
+
+END {
+    printf "\n"
+    if (!any_result) {
+        printf "\033[31mbuild failed\033[0m\n"
+        exit 1
+    }
+    if (total_fail > 0) {
+        printf "\033[31m%d failed\033[0m  /  %d passed\n", total_fail, total_pass
+        exit 1
+    } else {
+        printf "\033[32m%d passed\033[0m\n", total_pass
+    }
+}
+'

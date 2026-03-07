@@ -169,20 +169,6 @@ impl PatchConfig {
                         });
                     }
                 }
-                Operation::ReplaceCapture { capture, text } => {
-                    if capture.trim().is_empty() {
-                        issues.push(ValidationIssue::MissingField {
-                            patch_id: Some(patch.id.clone()),
-                            field: "operation.capture",
-                        });
-                    }
-                    if text.trim().is_empty() {
-                        issues.push(ValidationIssue::MissingField {
-                            patch_id: Some(patch.id.clone()),
-                            field: "operation.text",
-                        });
-                    }
-                }
                 Operation::Delete { insert_comment: _ } => {}
             }
 
@@ -199,7 +185,6 @@ impl PatchConfig {
                 Operation::DeleteSection => "delete-section",
                 Operation::ReplaceKey { .. } => "replace-key",
                 Operation::Replace { .. } => "replace",
-                Operation::ReplaceCapture { .. } => "replace-capture",
                 Operation::Delete { .. } => "delete",
             };
 
@@ -337,10 +322,6 @@ pub enum Operation {
         new_key: String,
     },
     Replace {
-        text: String,
-    },
-    ReplaceCapture {
-        capture: String,
         text: String,
     },
     Delete {
