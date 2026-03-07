@@ -317,6 +317,10 @@ fn check_patches_batched(
         }
 
         if !edits_with_ids.is_empty() {
+            // Sort to match apply_batch's internal descending byte_start order
+            // so the zip in simulate_batch_edits correctly pairs IDs with results.
+            edits_with_ids.sort_by(|(_, a), (_, b)| b.byte_start.cmp(&a.byte_start));
+
             match simulate_batch_edits(&file_path, &content, &edits_with_ids) {
                 Ok(results) => all_results.extend(results),
                 Err(err) => {
