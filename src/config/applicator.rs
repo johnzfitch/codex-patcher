@@ -537,7 +537,21 @@ fn compute_toml_edit(
         })?;
 
     let toml_query = match &patch.query {
-        Query::Toml { section, key, .. } => {
+        Query::Toml {
+            section,
+            key,
+            ensure_absent,
+            ensure_present,
+            ..
+        } => {
+            if *ensure_absent || *ensure_present {
+                return Err(ApplicationError::TomlOperation {
+                    file: file_path.to_path_buf(),
+                    reason: "query-level ensure_absent/ensure_present are not supported; \
+                             use patch.constraint instead"
+                        .to_string(),
+                });
+            }
             if let Some(key_val) = key {
                 let section_path = if let Some(sec) = section {
                     SectionPath::parse(sec).map_err(|e| ApplicationError::TomlOperation {
