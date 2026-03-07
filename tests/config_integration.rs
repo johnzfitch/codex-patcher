@@ -557,7 +557,7 @@ fn test_v099_ranges_against_v0100_alpha2() {
     // Bounded 0.99-alpha ranges must NOT match 0.100 (upper bound blocks it).
     // Note: privacy-v0.99.toml and privacy-v0.105-alpha13.toml were merged into
     // unified privacy.toml which uses per-patch version constraints instead.
-    let cases = [("patches/sandbox-metrics.toml", false)];
+    let cases = [("patches/archived/sandbox-metrics.toml", false)];
 
     for (relative, expected) in cases {
         let config = load_from_path(patch_root.join(relative)).expect("patch file must load");
@@ -576,7 +576,7 @@ fn test_sandbox_metric_patch_ranges_are_mutually_exclusive() {
     // Note: privacy-v0.99.toml and privacy-v0.105-alpha13.toml were merged into
     // unified privacy.toml which uses per-patch version constraints instead.
     // This test now only validates sandbox-metrics.toml standalone.
-    let patch_files = ["patches/sandbox-metrics.toml"];
+    let patch_files = ["patches/archived/sandbox-metrics.toml"];
     let patch_configs: Vec<_> = patch_files
         .iter()
         .map(|relative| {

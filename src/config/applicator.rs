@@ -20,15 +20,21 @@ use std::path::{Path, PathBuf};
 
 /// Check if a patch should be skipped based on its per-patch version constraint.
 /// Returns `Some(reason)` if the patch should be skipped, `None` if it should be applied.
-fn check_patch_version(patch: &PatchDefinition, workspace_version: &str) -> Option<String> {
-    let version_req = patch.version.as_deref()?;
+fn check_patch_version(
+    patch: &PatchDefinition,
+    workspace_version: &str,
+) -> Result<Option<String>, ApplicationError> {
+    let version_req = match patch.version.as_deref() {
+        Some(r) => r,
+        None => return Ok(None),
+    };
     match matches_requirement(workspace_version, Some(version_req)) {
-        Ok(true) => None, // Version matches, apply the patch
-        Ok(false) => Some(format!(
+        Ok(true) => Ok(None), // Version matches, apply the patch
+        Ok(false) => Ok(Some(format!(
             "patch version {} not satisfied by workspace {}",
             version_req, workspace_version
-        )),
-        Err(_) => Some(format!("invalid patch version constraint: {}", version_req)),
+        ))),
+        Err(e) => Err(ApplicationError::Version(e)),
     }
 }
 
@@ -283,10 +289,17 @@ fn check_patches_batched(
 
         for patch in patches {
             // Check per-patch version constraint
-            if let Some(reason) = check_patch_version(patch, workspace_version) {
-                immediate_results
-                    .push((patch.id.clone(), Ok(PatchResult::SkippedVersion { reason })));
-                continue;
+            match check_patch_version(patch, workspace_version) {
+                Err(e) => {
+                    immediate_results.push((patch.id.clone(), Err(e)));
+                    continue;
+                }
+                Ok(Some(reason)) => {
+                    immediate_results
+                        .push((patch.id.clone(), Ok(PatchResult::SkippedVersion { reason })));
+                    continue;
+                }
+                Ok(None) => {}
             }
 
             match &patch.query {
@@ -457,10 +470,17 @@ fn apply_patches_batched(
         {
             for patch in patches {
                 // Check per-patch version constraint
-                if let Some(reason) = check_patch_version(patch, workspace_version) {
-                    all_results
-                        .push((patch.id.clone(), Ok(PatchResult::SkippedVersion { reason })));
-                    continue;
+                match check_patch_version(patch, workspace_version) {
+                    Err(e) => {
+                        all_results.push((patch.id.clone(), Err(e)));
+                        continue;
+                    }
+                    Ok(Some(reason)) => {
+                        all_results
+                            .push((patch.id.clone(), Ok(PatchResult::SkippedVersion { reason })));
+                        continue;
+                    }
+                    Ok(None) => {}
                 }
                 all_results.push((
                     patch.id.clone(),
@@ -515,9 +535,17 @@ fn apply_patches_batched(
 
         for patch in patches {
             // Check per-patch version constraint
-            if let Some(reason) = check_patch_version(patch, workspace_version) {
-                patch_errors.push((patch.id.clone(), Ok(PatchResult::SkippedVersion { reason })));
-                continue;
+            match check_patch_version(patch, workspace_version) {
+                Err(e) => {
+                    patch_errors.push((patch.id.clone(), Err(e)));
+                    continue;
+                }
+                Ok(Some(reason)) => {
+                    patch_errors
+                        .push((patch.id.clone(), Ok(PatchResult::SkippedVersion { reason })));
+                    continue;
+                }
+                Ok(None) => {}
             }
             match compute_edit_for_patch(patch, &file_path, &content) {
                 Ok(edit) => edits_with_ids.push((patch.id.clone(), edit)),
