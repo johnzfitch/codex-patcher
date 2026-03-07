@@ -27,10 +27,11 @@
 |---------|-------------|
 | <img src=".github/assets/icons/shield-security-protection-16x16.png" width="14" alt=""/> **Atomic Writes** | Tempfile + fsync + rename for crash safety |
 | <img src=".github/assets/icons/tick.png" width="14" alt=""/> **Idempotent** | Safe to run multiple times without side effects |
-| <img src=".github/assets/icons/tree.png" width="14" alt=""/> **Tree-sitter** | CST-based parsing preserves exact source layout |
+| <img src=".github/assets/icons/tree.png" width="14" alt=""/> **Tree-sitter DSL** | `fn`, `struct`, `enum`, `impl`, `const` shorthand + raw S-expressions |
 | <img src=".github/assets/icons/search.png" width="14" alt=""/> **ast-grep** | Pattern-based code matching and replacement |
 | <img src=".github/assets/icons/lock.png" width="14" alt=""/> **Workspace Safety** | Prevents edits outside project boundaries |
-| <img src=".github/assets/icons/layers.png" width="14" alt=""/> **Multi-format** | Supports Rust, TOML, and more |
+| <img src=".github/assets/icons/layers.png" width="14" alt=""/> **Fuzzy Matching** | Elastic sliding-window Levenshtein survives upstream drift |
+| <img src=".github/assets/icons/layers.png" width="14" alt=""/> **Batched Engine** | All query types share one read&rarr;compute&rarr;write pipeline per file |
 
 ---
 
@@ -245,6 +246,7 @@ codex-patcher/
 │   ├── lib.rs           # Library entry point
 │   ├── main.rs          # CLI entry point
 │   ├── edit.rs          # Core Edit primitive
+│   ├── fuzzy.rs         # Elastic sliding-window Levenshtein matcher
 │   ├── safety.rs        # WorkspaceGuard
 │   ├── validate.rs      # Parse/syn validation
 │   ├── cache.rs         # Compilation cache
@@ -300,27 +302,32 @@ cargo build
 # Release build
 cargo build --release
 
-# Run tests
-cargo test
+# Run tests (compact one-line-per-binary output)
+make test
 
-# Run clippy
-cargo clippy --all-targets -- -D warnings
+# Run specific tests
+make test-args ARGS="--test integration"
+make test-args ARGS="-- fuzzy"
 
-# Format code
-cargo fmt
+# Full cargo output
+make test-verbose
+
+# Lint / format
+make lint
+make fmt
 ```
 
 ### Test Coverage
 
 ```bash
-# Run all tests with output
-cargo test --all-targets -- --nocapture
+# Compact runner (shows failures inline, passes as one line each)
+scripts/test
 
-# Run specific test
-cargo test test_atomic_write
+# Filter to a module
+scripts/test -- config::applicator
 
-# Run integration tests only
-cargo test --test integration
+# Integration tests only
+scripts/test --test integration
 ```
 
 ---
@@ -339,7 +346,7 @@ cargo test --test integration
 | Patch Definitions | <img src=".github/assets/icons/tick.png" width="12" alt=""/> Complete |
 | Documentation | <img src=".github/assets/icons/tick.png" width="12" alt=""/> Complete |
 
-**Test Results:** 149 tests, all passing
+**Test Results:** 195 tests, all passing
 
 ---
 

@@ -104,9 +104,42 @@ pub(crate) const STATSIG_API_KEY: $$ = $$;
 '''
 ```
 
-### 2. Tree-Sitter (Low-Level Queries)
+### 2. Tree-Sitter (Structural Queries)
 
-S-expression queries for precise node matching:
+Tree-sitter queries accept two forms:
+
+**DSL shorthand** &mdash; human-readable prefix syntax (recommended):
+
+```toml
+[patches.query]
+type = "tree-sitter"
+pattern = "fn resolve_exporter"          # exact function name
+
+pattern = "fn OtelConfig::default"       # method on a type
+pattern = "struct OtelConfig"            # struct definition
+pattern = "enum OtelExporterKind"        # enum definition
+pattern = "impl OtelConfig"              # impl block
+pattern = "impl Default for OtelConfig" # trait impl
+pattern = "const STATSIG_API_KEY"       # named constant
+pattern = "const /^STATSIG_/"           # constants matching a regex
+pattern = "static GLOBAL_COUNTER"       # static item
+pattern = "use std::collections::HashMap" # use declaration
+```
+
+| DSL Prefix | Matches |
+|---|---|
+| `fn name` | Top-level function `name` |
+| `fn Type::method` | Method `method` on `Type` |
+| `struct Name` | Struct definition |
+| `enum Name` | Enum definition |
+| `impl Type` | Impl block for `Type` |
+| `impl Trait for Type` | Trait impl |
+| `const NAME` | Constant by exact name |
+| `const /regex/` | All constants whose name matches regex |
+| `static NAME` | Static item |
+| `use path` | Use declaration |
+
+**Raw S-expression** &mdash; for anything the DSL doesn&rsquo;t cover (pattern must start with `(`):
 
 ```toml
 [patches.query]
@@ -119,9 +152,8 @@ pattern = '''
 ```
 
 **When to use:**
-- Complex structural queries
-- Matching based on syntax node types
-- Need predicates like `#match?`, `#eq?`
+- Renaming or replacing a specific named declaration (use DSL)
+- Complex structural queries requiring predicates like `#match?`, `#eq?` (use S-expression)
 
 ### 3. Text (Literal String Search with Fuzzy Fallback)
 
@@ -202,14 +234,20 @@ Structure-preserving TOML edits:
 [patches.query]
 type = "toml"
 section = "profile.zack"
-key = "opt-level"              # Optional
-ensure_absent = true           # Only apply if section doesn't exist
-ensure_present = false         # Only apply if section exists
+key = "opt-level"    # Optional — omit to target the whole section
+```
+
+To gate a TOML patch on whether the section/key already exists, use `patch.constraint` (not the query):
+
+```toml
+[patches.constraint]
+ensure_absent = true    # Only apply if section/key does not exist
+# ensure_present = true # Only apply if section/key already exists
 ```
 
 **When to use:**
-- Modifying Cargo.toml
-- Editing .cargo/config.toml
+- Modifying `Cargo.toml`
+- Editing `.cargo/config.toml`
 - Any TOML configuration file
 
 ## Operation Types
@@ -228,25 +266,6 @@ pub fn new_implementation() {
     // New code here
 }
 '''
-```
-
-#### replace-capture
-
-Replace only a captured metavariable:
-
-```toml
-# Query captures $EXPORTER
-[patches.query]
-type = "ast-grep"
-pattern = '''
-metrics_exporter: $EXPORTER,
-'''
-
-# Replace just the $EXPORTER part
-[patches.operation]
-type = "replace-capture"
-capture = "EXPORTER"
-text = "OtelExporterKind::None"
 ```
 
 #### delete
@@ -546,7 +565,7 @@ type = "delete"
 insert_comment = "// Removed hardcoded API key"
 ```
 
-### Example 2: Change Default Value
+### Example 2: Replace a Named Function via Tree-Sitter DSL
 
 ```toml
 [[patches]]
@@ -554,23 +573,19 @@ id = "change-default-timeout"
 file = "src/config.rs"
 
 [patches.query]
-type = "ast-grep"
-pattern = '''
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            $$$
-            timeout: $OLD_VALUE,
-            $$$
-        }
+type = "tree-sitter"
+pattern = "fn Config::default"
+
+[patches.operation]
+type = "replace"
+text = '''
+fn default() -> Self {
+    Config {
+        timeout: Duration::from_secs(30),
+        ..Default::default()
     }
 }
 '''
-
-[patches.operation]
-type = "replace-capture"
-capture = "OLD_VALUE"
-text = "Duration::from_secs(30)"
 ```
 
 ### Example 3: Add Cargo Profile
@@ -583,7 +598,9 @@ file = "Cargo.toml"
 [patches.query]
 type = "toml"
 section = "profile.custom"
-ensure_absent = true
+
+[patches.constraint]
+ensure_absent = true    # Only insert if the section doesn't already exist
 
 [patches.operation]
 type = "insert-section"
