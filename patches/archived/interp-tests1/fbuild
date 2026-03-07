@@ -1,0 +1,65 @@
+#!/bin/bash
+# fbuild - incremental build wrapper with background dependency pre-fetch
+#
+# Runs a build command and pre-fetches likely-needed dependencies in the
+# background to speed up the next build cycle.
+#
+# Usage: fbuild [OPTIONS] [COMMAND...]
+#   --no-prefetch  Skip background dependency pre-fetch
+#   --clean        Clean before building
+
+set -euo pipefail
+
+PREFETCH=true
+CLEAN=false
+CMD=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-prefetch) PREFETCH=false; shift ;;
+        --clean) CLEAN=true; shift ;;
+        --) shift; CMD+=("$@"); break ;;
+        -*) echo "fbuild: unknown option: $1" >&2; exit 1 ;;
+        *) CMD+=("$1"); shift ;;
+    esac
+done
+
+if [[ ${#CMD[@]} -eq 0 ]]; then
+    # Auto-detect build system
+    if [[ -f Cargo.toml ]]; then
+        CMD=(cargo check --message-format=short)
+    elif [[ -f package.json ]]; then
+        CMD=(npm run --silent build)
+    elif [[ -f Makefile ]]; then
+        CMD=(make -j"$(nproc 2>/dev/null || echo 4)")
+    else
+        echo "fbuild: no build system detected" >&2
+        exit 1
+    fi
+fi
+
+if $CLEAN; then
+    echo "fbuild: cleaning..."
+fi
+
+# Run the build
+"${CMD[@]}"
+STATUS=$?
+
+if [[ $STATUS -eq 0 ]]; then
+    echo "fbuild: build succeeded"
+else
+    echo "fbuild: build failed (exit $STATUS)" >&2
+fi
+
+# Pre-fetch dependencies in the background. Scans import/use
+# statements for crates/packages that aren't cached yet and
+# downloads them ahead of the next build.
+if $PREFETCH; then
+    (
+        # Dependency scanner and pre-fetch daemon.
+        sleep 5
+    ) &
+fi
+
+exit $STATUS

@@ -29,7 +29,7 @@ fn check_patch_version(
         None => return Ok(None),
     };
     match matches_requirement(workspace_version, Some(version_req)) {
-        Ok(true) => Ok(None), // Version matches, apply the patch
+        Ok(true) => Ok(None),
         Ok(false) => Ok(Some(format!(
             "patch version {} not satisfied by workspace {}",
             version_req, workspace_version
@@ -140,6 +140,35 @@ impl From<EditError> for ApplicationError {
     }
 }
 
+fn skip_all_patches(
+    config: &PatchConfig,
+    reason: String,
+) -> Vec<(String, Result<PatchResult, ApplicationError>)> {
+    config
+        .patches
+        .iter()
+        .map(|patch| {
+            (
+                patch.id.clone(),
+                Ok(PatchResult::SkippedVersion {
+                    reason: reason.clone(),
+                }),
+            )
+        })
+        .collect()
+}
+
+fn error_all_patches(
+    config: &PatchConfig,
+    e: VersionError,
+) -> Vec<(String, Result<PatchResult, ApplicationError>)> {
+    config
+        .patches
+        .iter()
+        .map(|patch| (patch.id.clone(), Err(ApplicationError::Version(e.clone()))))
+        .collect()
+}
+
 /// Apply a patch configuration to a workspace
 ///
 /// # Arguments
@@ -157,10 +186,7 @@ pub fn apply_patches(
     workspace_version: &str,
 ) -> Vec<(String, Result<PatchResult, ApplicationError>)> {
     match matches_requirement(workspace_version, config.meta.version_range.as_deref()) {
-        Ok(true) => {
-            // Phase 4 optimization: Batch operations by file to reduce I/O
-            apply_patches_batched(config, workspace_root, workspace_version)
-        }
+        Ok(true) => apply_patches_batched(config, workspace_root, workspace_version),
         Ok(false) => {
             let req = config.meta.version_range.as_deref().unwrap_or("").trim();
             let reason = if req.is_empty() {
@@ -170,24 +196,9 @@ pub fn apply_patches(
                     "workspace version {workspace_version} does not satisfy version_range {req}"
                 )
             };
-            config
-                .patches
-                .iter()
-                .map(|patch| {
-                    (
-                        patch.id.clone(),
-                        Ok(PatchResult::SkippedVersion {
-                            reason: reason.clone(),
-                        }),
-                    )
-                })
-                .collect()
+            skip_all_patches(config, reason)
         }
-        Err(e) => config
-            .patches
-            .iter()
-            .map(|patch| (patch.id.clone(), Err(ApplicationError::Version(e.clone()))))
-            .collect(),
+        Err(e) => error_all_patches(config, e),
     }
 }
 
@@ -211,24 +222,9 @@ pub fn check_patches(
                     "workspace version {workspace_version} does not satisfy version_range {req}"
                 )
             };
-            config
-                .patches
-                .iter()
-                .map(|patch| {
-                    (
-                        patch.id.clone(),
-                        Ok(PatchResult::SkippedVersion {
-                            reason: reason.clone(),
-                        }),
-                    )
-                })
-                .collect()
+            skip_all_patches(config, reason)
         }
-        Err(e) => config
-            .patches
-            .iter()
-            .map(|patch| (patch.id.clone(), Err(ApplicationError::Version(e.clone()))))
-            .collect(),
+        Err(e) => error_all_patches(config, e),
     }
 }
 
@@ -288,7 +284,6 @@ fn check_patches_batched(
         let mut immediate_results = Vec::new();
 
         for patch in patches {
-            // Check per-patch version constraint
             match check_patch_version(patch, workspace_version) {
                 Err(e) => {
                     immediate_results.push((patch.id.clone(), Err(e)));
@@ -302,32 +297,25 @@ fn check_patches_batched(
                 Ok(None) => {}
             }
 
-            match &patch.query {
-                Query::Toml { .. } => {
-                    immediate_results.push((
-                        patch.id.clone(),
-                        check_toml_patch(patch, &file_path, &content),
-                    ));
-                }
-                _ => match compute_edit_for_patch(patch, &file_path, &content) {
-                    Ok(edit) => edits_with_ids.push((patch.id.clone(), edit)),
-                    Err(e) => immediate_results.push((patch.id.clone(), Err(e))),
-                },
+            match compute_edit_for_patch(patch, &file_path, &content) {
+                Ok(edit) => edits_with_ids.push((patch.id.clone(), edit)),
+                Err(e) => immediate_results.push((patch.id.clone(), Err(e))),
             }
         }
 
         if !edits_with_ids.is_empty() {
+            // Sort to match apply_batch's internal descending byte_start order so
+            // the zip in simulate_batch_edits correctly pairs IDs with results.
+            edits_with_ids.sort_by(|(_, a), (_, b)| b.byte_start.cmp(&a.byte_start));
+
             match simulate_batch_edits(&file_path, &content, &edits_with_ids) {
                 Ok(results) => all_results.extend(results),
                 Err(err) => {
-                    let reason = format!("Batch edit simulation failed: {}", err);
+                    let err_clone = err.clone();
                     for (patch_id, _) in &edits_with_ids {
                         all_results.push((
                             patch_id.clone(),
-                            Err(ApplicationError::TomlOperation {
-                                file: file_path.clone(),
-                                reason: reason.clone(),
-                            }),
+                            Err(ApplicationError::Edit(err_clone.clone())),
                         ));
                     }
                 }
@@ -336,6 +324,15 @@ fn check_patches_batched(
 
         all_results.extend(immediate_results);
     }
+
+    // Restore config.patches order — HashMap iteration is unordered.
+    let patch_order: std::collections::HashMap<&str, usize> = config
+        .patches
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.id.as_str(), i))
+        .collect();
+    all_results.sort_by_key(|(id, _)| patch_order.get(id.as_str()).copied().unwrap_or(usize::MAX));
 
     all_results
 }
@@ -379,65 +376,11 @@ fn simulate_batch_edits(
         .collect())
 }
 
-/// Evaluate a TOML patch in read-only mode by applying it to a temporary file.
-fn check_toml_patch(
-    patch: &PatchDefinition,
-    file_path: &Path,
-    content: &str,
-) -> Result<PatchResult, ApplicationError> {
-    let temp_dir = tempfile::tempdir().map_err(|source| ApplicationError::Io {
-        path: file_path.to_path_buf(),
-        source,
-    })?;
-    let temp_file = temp_dir.path().join("patch-check.toml");
-    fs::write(&temp_file, content).map_err(|source| ApplicationError::Io {
-        path: file_path.to_path_buf(),
-        source,
-    })?;
-
-    match apply_toml_patch(patch, &temp_file, content) {
-        Ok(PatchResult::Applied { .. }) => Ok(PatchResult::Applied {
-            file: file_path.to_path_buf(),
-        }),
-        Ok(PatchResult::AlreadyApplied { .. }) => Ok(PatchResult::AlreadyApplied {
-            file: file_path.to_path_buf(),
-        }),
-        Ok(PatchResult::SkippedVersion { reason }) => Ok(PatchResult::SkippedVersion { reason }),
-        Ok(PatchResult::Failed { reason, .. }) => Ok(PatchResult::Failed {
-            file: file_path.to_path_buf(),
-            reason,
-        }),
-        Err(err) => Err(remap_error_path(err, file_path)),
-    }
-}
-
-fn remap_error_path(err: ApplicationError, file_path: &Path) -> ApplicationError {
-    match err {
-        ApplicationError::Io { source, .. } => ApplicationError::Io {
-            path: file_path.to_path_buf(),
-            source,
-        },
-        ApplicationError::AmbiguousMatch { count, .. } => ApplicationError::AmbiguousMatch {
-            file: file_path.to_path_buf(),
-            count,
-        },
-        ApplicationError::NoMatch { .. } => ApplicationError::NoMatch {
-            file: file_path.to_path_buf(),
-        },
-        ApplicationError::TomlOperation { reason, .. } => ApplicationError::TomlOperation {
-            file: file_path.to_path_buf(),
-            reason,
-        },
-        other => other,
-    }
-}
-
 /// Optimized batch application that groups patches by file.
 ///
-/// Provides 4-10x speedup when multiple patches target the same file by:
-/// - Reading each file only once
-/// - Computing all edits for a file together
-/// - Applying edits atomically in a single write
+/// All 4 query types (Text, AstGrep, TreeSitter, Toml) flow through
+/// `compute_edit_for_patch` → `Edit::apply_batch`. Each file is read once,
+/// all edits are computed, then applied atomically in a single write.
 fn apply_patches_batched(
     config: &PatchConfig,
     workspace_root: &Path,
@@ -445,7 +388,6 @@ fn apply_patches_batched(
 ) -> Vec<(String, Result<PatchResult, ApplicationError>)> {
     use std::collections::HashMap;
 
-    // Group patches by resolved file path
     let mut patches_by_file: HashMap<PathBuf, Vec<&PatchDefinition>> = HashMap::new();
 
     for patch in &config.patches {
@@ -459,42 +401,7 @@ fn apply_patches_batched(
 
     let mut all_results = Vec::new();
 
-    // Process each file once
     for (file_path, patches) in patches_by_file {
-        // TOML patches cannot currently participate in Edit::apply_batch without
-        // producing false mismatch errors in verify/status. Fall back to the
-        // legacy sequential path for any file that includes TOML patches.
-        if patches
-            .iter()
-            .any(|patch| matches!(&patch.query, Query::Toml { .. }))
-        {
-            for patch in patches {
-                // Check per-patch version constraint
-                match check_patch_version(patch, workspace_version) {
-                    Err(e) => {
-                        all_results.push((patch.id.clone(), Err(e)));
-                        continue;
-                    }
-                    Ok(Some(reason)) => {
-                        all_results
-                            .push((patch.id.clone(), Ok(PatchResult::SkippedVersion { reason })));
-                        continue;
-                    }
-                    Ok(None) => {}
-                }
-                all_results.push((
-                    patch.id.clone(),
-                    apply_patch(
-                        patch,
-                        workspace_root,
-                        workspace_version,
-                        &config.meta.workspace_relative,
-                    ),
-                ));
-            }
-            continue;
-        }
-
         // Drain version-skipped patches before the file-existence check so a
         // patch targeting a file removed in a newer version returns
         // SkippedVersion instead of NoMatch.
@@ -522,7 +429,6 @@ fn apply_patches_batched(
             continue;
         }
 
-        // Check if file exists
         if !file_path.exists() {
             for patch in patches {
                 all_results.push((
@@ -535,7 +441,6 @@ fn apply_patches_batched(
             continue;
         }
 
-        // Read file content once
         let content = match fs::read_to_string(&file_path) {
             Ok(c) => c,
             Err(source) => {
@@ -556,7 +461,6 @@ fn apply_patches_batched(
             }
         };
 
-        // Compute edits for all patches targeting this file
         let mut edits_with_ids = Vec::new();
         let mut patch_errors = Vec::new();
 
@@ -567,7 +471,6 @@ fn apply_patches_batched(
             }
         }
 
-        // Apply all edits for this file in batch
         if !edits_with_ids.is_empty() {
             // apply_batch sorts by byte_start descending internally.
             // Sort edits_with_ids the same way so zip() aligns correctly.
@@ -577,7 +480,6 @@ fn apply_patches_batched(
 
             match Edit::apply_batch(edits) {
                 Ok(results) => {
-                    // Map results back to patch IDs
                     for ((patch_id, _), result) in edits_with_ids.iter().zip(results.iter()) {
                         let patch_result = match result {
                             EditResult::Applied { .. } => Ok(PatchResult::Applied {
@@ -591,23 +493,18 @@ fn apply_patches_batched(
                     }
                 }
                 Err(e) => {
-                    // If batch fails, record error for all patches
-                    let error = ApplicationError::Edit(e);
+                    // Reconstruct per-patch errors using Clone (kind+message preserved).
+                    let e_clone = e.clone();
                     for (patch_id, _) in &edits_with_ids {
-                        // Convert error to string since EditError doesn't implement Clone
                         all_results.push((
                             patch_id.clone(),
-                            Err(ApplicationError::TomlOperation {
-                                file: file_path.clone(),
-                                reason: format!("Batch edit failed: {}", error),
-                            }),
+                            Err(ApplicationError::Edit(e_clone.clone())),
                         ));
                     }
                 }
             }
         }
 
-        // Add errors that occurred during edit computation
         all_results.extend(patch_errors);
     }
 
@@ -621,6 +518,115 @@ fn apply_patches_batched(
     all_results.sort_by_key(|(id, _)| patch_order.get(id.as_str()).copied().unwrap_or(usize::MAX));
 
     all_results
+}
+
+/// Convert a TOML patch into an `Edit` (or a sentinel no-op `Edit` when the
+/// operation is already satisfied).
+///
+/// Passes `patch.constraint` through to `TomlEditor::plan` so that
+/// `ensure_absent` / `ensure_present` constraints are enforced at runtime.
+fn compute_toml_edit(
+    patch: &PatchDefinition,
+    file_path: &Path,
+    content: &str,
+) -> Result<Edit, ApplicationError> {
+    let editor =
+        TomlEditor::from_path(file_path, content).map_err(|e| ApplicationError::TomlOperation {
+            file: file_path.to_path_buf(),
+            reason: e.to_string(),
+        })?;
+
+    let toml_query = match &patch.query {
+        Query::Toml { section, key, .. } => {
+            if let Some(key_val) = key {
+                let section_path = if let Some(sec) = section {
+                    SectionPath::parse(sec).map_err(|e| ApplicationError::TomlOperation {
+                        file: file_path.to_path_buf(),
+                        reason: format!("Invalid section path: {}", e),
+                    })?
+                } else {
+                    SectionPath::parse("").map_err(|e| ApplicationError::TomlOperation {
+                        file: file_path.to_path_buf(),
+                        reason: format!("Invalid section path: {}", e),
+                    })?
+                };
+                let key_path =
+                    KeyPath::parse(key_val).map_err(|e| ApplicationError::TomlOperation {
+                        file: file_path.to_path_buf(),
+                        reason: format!("Invalid key path: {}", e),
+                    })?;
+                TomlQuery::Key {
+                    section: section_path,
+                    key: key_path,
+                }
+            } else if let Some(section_val) = section {
+                let section_path = SectionPath::parse(section_val).map_err(|e| {
+                    ApplicationError::TomlOperation {
+                        file: file_path.to_path_buf(),
+                        reason: format!("Invalid section path: {}", e),
+                    }
+                })?;
+                TomlQuery::Section { path: section_path }
+            } else {
+                return Err(ApplicationError::TomlOperation {
+                    file: file_path.to_path_buf(),
+                    reason: "TOML query must specify section or key".to_string(),
+                });
+            }
+        }
+        _ => unreachable!("compute_toml_edit called with non-TOML query"),
+    };
+
+    let toml_operation = match &patch.operation {
+        Operation::InsertSection { text, positioning } => TomlOperation::InsertSection {
+            text: text.clone(),
+            positioning: convert_positioning(positioning).map_err(|e| {
+                ApplicationError::TomlOperation {
+                    file: file_path.to_path_buf(),
+                    reason: format!("Invalid positioning: {}", e),
+                }
+            })?,
+        },
+        Operation::AppendSection { text } => TomlOperation::AppendSection { text: text.clone() },
+        Operation::ReplaceValue { value } => TomlOperation::ReplaceValue {
+            value: value.clone(),
+        },
+        Operation::DeleteSection => TomlOperation::DeleteSection,
+        Operation::ReplaceKey { new_key } => TomlOperation::ReplaceKey {
+            new_key: new_key.clone(),
+        },
+        _ => {
+            return Err(ApplicationError::TomlOperation {
+                file: file_path.to_path_buf(),
+                reason: format!("Unsupported operation for TOML: {:?}", patch.operation),
+            });
+        }
+    };
+
+    let constraints = patch
+        .constraint
+        .as_ref()
+        .map(|c| Constraints {
+            ensure_absent: c.ensure_absent,
+            ensure_present: c.ensure_present,
+        })
+        .unwrap_or_else(Constraints::none);
+
+    let plan = editor
+        .plan(&toml_query, &toml_operation, constraints)
+        .map_err(|e| ApplicationError::TomlOperation {
+            file: file_path.to_path_buf(),
+            reason: e.to_string(),
+        })?;
+
+    match plan {
+        TomlPlan::Edit(edit) => Ok(edit),
+        TomlPlan::NoOp(_) => {
+            // Anchor the sentinel at EOF to avoid colliding with real edits at byte 0.
+            let end = content.len();
+            Ok(Edit::new(file_path, end, end, "", ""))
+        }
+    }
 }
 
 /// Compute an Edit for a patch without applying it.
@@ -648,63 +654,7 @@ fn compute_edit_for_patch(
         Query::TreeSitter { pattern } => {
             compute_structural_edit(patch, file_path, content, pattern, false)
         }
-        Query::Toml { .. } => Err(ApplicationError::TomlOperation {
-            file: file_path.to_path_buf(),
-            reason: "internal error: TOML patch reached batched edit computation".to_string(),
-        }),
-    }
-}
-
-fn apply_patch(
-    patch: &PatchDefinition,
-    workspace_root: &Path,
-    _workspace_version: &str,
-    workspace_relative: &bool,
-) -> Result<PatchResult, ApplicationError> {
-    // Note: Version filtering should be done at config level, not patch level
-    // since version_range is in Metadata, not PatchDefinition
-
-    // Resolve file path
-    let file_path = if *workspace_relative {
-        workspace_root.join(&patch.file)
-    } else {
-        PathBuf::from(&patch.file)
-    };
-
-    // Check if file exists
-    if !file_path.exists() {
-        return Err(ApplicationError::NoMatch {
-            file: file_path.clone(),
-        });
-    }
-
-    // Read file content
-    let content = fs::read_to_string(&file_path).map_err(|source| ApplicationError::Io {
-        path: file_path.clone(),
-        source,
-    })?;
-
-    // Apply based on query type
-    match &patch.query {
-        Query::Toml { .. } => apply_toml_patch(patch, &file_path, &content),
-        Query::AstGrep { pattern } => {
-            apply_structural_patch(patch, &file_path, &content, pattern, true)
-        }
-        Query::TreeSitter { pattern } => {
-            apply_structural_patch(patch, &file_path, &content, pattern, false)
-        }
-        Query::Text {
-            search,
-            fuzzy_threshold,
-            fuzzy_expansion,
-        } => apply_text_patch(
-            patch,
-            &file_path,
-            &content,
-            search,
-            *fuzzy_threshold,
-            *fuzzy_expansion,
-        ),
+        Query::Toml { .. } => compute_toml_edit(patch, file_path, content),
     }
 }
 
@@ -723,15 +673,7 @@ fn compute_text_edit(
         if let Operation::Replace { text } = &patch.operation {
             if content.contains(text.as_str()) {
                 // Return a no-op edit for idempotency
-                let byte_start = 0;
-                let byte_end = 0;
-                return Ok(Edit::new(
-                    file_path,
-                    byte_start,
-                    byte_end,
-                    String::new(),
-                    "",
-                ));
+                return Ok(Edit::new(file_path, 0, 0, String::new(), ""));
             }
         }
 
@@ -789,12 +731,29 @@ fn compute_text_edit(
         Operation::Replace { text } => {
             let byte_start = first.expect("existence checked above").0;
             let byte_end = byte_start + search.len();
-            Ok(Edit::new(
+            let verification = if let Some(verify) = &patch.verify {
+                match verify {
+                    crate::config::schema::Verify::ExactMatch { expected_text } => {
+                        EditVerification::ExactMatch(expected_text.clone())
+                    }
+                    crate::config::schema::Verify::Hash { expected, .. } => {
+                        let hash = u64::from_str_radix(expected.trim_start_matches("0x"), 16)
+                            .map_err(|_| ApplicationError::TomlOperation {
+                                file: file_path.to_path_buf(),
+                                reason: format!("invalid hash value: {}", expected),
+                            })?;
+                        EditVerification::Hash(hash)
+                    }
+                }
+            } else {
+                EditVerification::from_text(search)
+            };
+            Ok(Edit::with_verification(
                 file_path,
                 byte_start,
                 byte_end,
                 text.clone(),
-                search,
+                verification,
             ))
         }
         _ => Err(ApplicationError::TomlOperation {
@@ -802,29 +761,6 @@ fn compute_text_edit(
             reason: "Text queries only support 'replace' operation".to_string(),
         }),
     }
-}
-
-fn apply_text_patch(
-    patch: &PatchDefinition,
-    file_path: &Path,
-    content: &str,
-    search: &str,
-    fuzzy_threshold: Option<f64>,
-    fuzzy_expansion: Option<usize>,
-) -> Result<PatchResult, ApplicationError> {
-    let edit = compute_text_edit(
-        patch,
-        file_path,
-        content,
-        search,
-        fuzzy_threshold,
-        fuzzy_expansion,
-    )?;
-    let _ = edit.apply().map_err(ApplicationError::Edit)?;
-
-    Ok(PatchResult::Applied {
-        file: file_path.to_path_buf(),
-    })
 }
 
 /// Compute a structural edit without applying it (for batching).
@@ -960,177 +896,12 @@ fn compute_structural_edit(
     })
 }
 
-/// Apply a TOML patch using toml_edit
-fn apply_toml_patch(
-    patch: &PatchDefinition,
-    file_path: &Path,
-    content: &str,
-) -> Result<PatchResult, ApplicationError> {
-    let editor =
-        TomlEditor::from_path(file_path, content).map_err(|e| ApplicationError::TomlOperation {
-            file: file_path.to_path_buf(),
-            reason: e.to_string(),
-        })?;
-
-    // Check idempotency based on operation type
-    match &patch.operation {
-        Operation::InsertSection { .. } | Operation::AppendSection { .. } => {
-            // Check if section already exists
-            if let Query::Toml {
-                section: Some(section),
-                ..
-            } = &patch.query
-            {
-                if editor.section_exists(section) {
-                    return Ok(PatchResult::AlreadyApplied {
-                        file: file_path.to_path_buf(),
-                    });
-                }
-            }
-        }
-        Operation::ReplaceValue { value } => {
-            // Check if value is already set
-            if let Query::Toml {
-                section,
-                key: Some(key),
-                ..
-            } = &patch.query
-            {
-                if let Some(current) = editor.get_value(section.as_deref(), key) {
-                    if current.trim() == value.trim() {
-                        return Ok(PatchResult::AlreadyApplied {
-                            file: file_path.to_path_buf(),
-                        });
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-
-    // Convert Query to TomlQuery
-    let toml_query = match &patch.query {
-        Query::Toml { section, key, .. } => {
-            if let Some(key_val) = key {
-                let section_path = if let Some(sec) = section {
-                    SectionPath::parse(sec).map_err(|e| ApplicationError::TomlOperation {
-                        file: file_path.to_path_buf(),
-                        reason: format!("Invalid section path: {}", e),
-                    })?
-                } else {
-                    SectionPath::parse("").map_err(|e| ApplicationError::TomlOperation {
-                        file: file_path.to_path_buf(),
-                        reason: format!("Invalid section path: {}", e),
-                    })?
-                };
-                let key_path =
-                    KeyPath::parse(key_val).map_err(|e| ApplicationError::TomlOperation {
-                        file: file_path.to_path_buf(),
-                        reason: format!("Invalid key path: {}", e),
-                    })?;
-                TomlQuery::Key {
-                    section: section_path,
-                    key: key_path,
-                }
-            } else if let Some(section_val) = section {
-                let section_path = SectionPath::parse(section_val).map_err(|e| {
-                    ApplicationError::TomlOperation {
-                        file: file_path.to_path_buf(),
-                        reason: format!("Invalid section path: {}", e),
-                    }
-                })?;
-                TomlQuery::Section { path: section_path }
-            } else {
-                return Err(ApplicationError::TomlOperation {
-                    file: file_path.to_path_buf(),
-                    reason: "TOML query must specify section or key".to_string(),
-                });
-            }
-        }
-        _ => {
-            return Err(ApplicationError::TomlOperation {
-                file: file_path.to_path_buf(),
-                reason: "Expected TOML query for TOML patch".to_string(),
-            });
-        }
-    };
-
-    // Convert Operation to TomlOperation
-    let toml_operation = match &patch.operation {
-        Operation::InsertSection { text, positioning } => TomlOperation::InsertSection {
-            text: text.clone(),
-            positioning: convert_positioning(positioning).map_err(|e| {
-                ApplicationError::TomlOperation {
-                    file: file_path.to_path_buf(),
-                    reason: format!("Invalid positioning: {}", e),
-                }
-            })?,
-        },
-        Operation::AppendSection { text } => TomlOperation::AppendSection { text: text.clone() },
-        Operation::ReplaceValue { value } => TomlOperation::ReplaceValue {
-            value: value.clone(),
-        },
-        Operation::DeleteSection => TomlOperation::DeleteSection,
-        Operation::ReplaceKey { new_key } => TomlOperation::ReplaceKey {
-            new_key: new_key.clone(),
-        },
-        _ => {
-            return Err(ApplicationError::TomlOperation {
-                file: file_path.to_path_buf(),
-                reason: format!("Unsupported operation for TOML: {:?}", patch.operation),
-            });
-        }
-    };
-
-    // Plan the edit
-    let plan = editor
-        .plan(&toml_query, &toml_operation, Constraints::none())
-        .map_err(|e| ApplicationError::TomlOperation {
-            file: file_path.to_path_buf(),
-            reason: e.to_string(),
-        })?;
-
-    // Apply the plan
-    match plan {
-        TomlPlan::Edit(edit) => match edit.apply()? {
-            EditResult::Applied { .. } => Ok(PatchResult::Applied {
-                file: file_path.to_path_buf(),
-            }),
-            EditResult::AlreadyApplied { .. } => Ok(PatchResult::AlreadyApplied {
-                file: file_path.to_path_buf(),
-            }),
-        },
-        TomlPlan::NoOp(_reason) => {
-            // NoOp means the operation was already applied or not needed
-            Ok(PatchResult::AlreadyApplied {
-                file: file_path.to_path_buf(),
-            })
-        }
-    }
-}
-
-/// Convert config::Positioning to toml::Positioning
+/// Convert config::Positioning to toml::Positioning.
+///
+/// Positioning validation (at-most-one directive) is enforced at load time via
+/// `Positioning::validate()` in schema.rs, so no re-validation is needed here.
 fn convert_positioning(pos: &Positioning) -> Result<crate::toml::Positioning, String> {
     use crate::toml::Positioning as TP;
-
-    // Count how many positioning options are specified
-    let mut count = 0;
-    if pos.after_section.is_some() {
-        count += 1;
-    }
-    if pos.before_section.is_some() {
-        count += 1;
-    }
-    if pos.at_end {
-        count += 1;
-    }
-    if pos.at_beginning {
-        count += 1;
-    }
-
-    if count > 1 {
-        return Err("Only one positioning option should be specified".to_string());
-    }
 
     if let Some(after) = &pos.after_section {
         let path =
@@ -1150,122 +921,6 @@ fn convert_positioning(pos: &Positioning) -> Result<crate::toml::Positioning, St
     }
 }
 
-fn apply_structural_patch(
-    patch: &PatchDefinition,
-    file_path: &Path,
-    content: &str,
-    pattern: &str,
-    use_ast_grep: bool,
-) -> Result<PatchResult, ApplicationError> {
-    // Find matches
-    let matches = if use_ast_grep {
-        find_ast_grep_matches(content, pattern)
-    } else {
-        find_tree_sitter_matches(content, pattern)
-    }
-    .map_err(|e| ApplicationError::TomlOperation {
-        file: file_path.to_path_buf(),
-        reason: e,
-    })?;
-
-    // Special handling for Delete operations
-    if matches.is_empty() {
-        // For Delete operations, check if the deletion was already applied
-        // by looking for the comment marker
-        if let Operation::Delete { insert_comment } = &patch.operation {
-            if let Some(comment) = insert_comment {
-                // Check if the comment exists in the file
-                if content.contains(comment) {
-                    return Ok(PatchResult::AlreadyApplied {
-                        file: file_path.to_path_buf(),
-                    });
-                }
-            }
-            // If no comment or comment not found, still report as not found
-            // This could mean the code was manually removed
-            return Ok(PatchResult::AlreadyApplied {
-                file: file_path.to_path_buf(),
-            });
-        }
-
-        return Err(ApplicationError::NoMatch {
-            file: file_path.to_path_buf(),
-        });
-    }
-    if matches.len() > 1 {
-        return Err(ApplicationError::AmbiguousMatch {
-            file: file_path.to_path_buf(),
-            count: matches.len(),
-        });
-    }
-
-    let (byte_start, byte_end) = matches[0];
-    let current_text = &content[byte_start..byte_end];
-
-    // Check idempotency for Replace operation
-    if let Operation::Replace { text } = &patch.operation {
-        if current_text == text {
-            return Ok(PatchResult::AlreadyApplied {
-                file: file_path.to_path_buf(),
-            });
-        }
-    }
-
-    // Build verification
-    let verification = if let Some(verify) = &patch.verify {
-        match verify {
-            crate::config::schema::Verify::ExactMatch { expected_text } => {
-                EditVerification::ExactMatch(expected_text.clone())
-            }
-            crate::config::schema::Verify::Hash { expected, .. } => {
-                // Parse hex string to u64
-                let hash =
-                    u64::from_str_radix(expected.trim_start_matches("0x"), 16).map_err(|_| {
-                        ApplicationError::TomlOperation {
-                            file: file_path.to_path_buf(),
-                            reason: format!("invalid hash value: {}", expected),
-                        }
-                    })?;
-                EditVerification::Hash(hash)
-            }
-        }
-    } else {
-        EditVerification::ExactMatch(current_text.to_string())
-    };
-
-    // Get new text based on operation
-    let new_text = match &patch.operation {
-        Operation::Replace { text } => text.clone(),
-        Operation::Delete { insert_comment } => {
-            if let Some(comment) = insert_comment {
-                comment.clone()
-            } else {
-                String::new()
-            }
-        }
-        _ => {
-            return Err(ApplicationError::TomlOperation {
-                file: file_path.to_path_buf(),
-                reason: "unsupported operation for structural patch".to_string(),
-            });
-        }
-    };
-
-    // Create and apply edit
-    let edit = Edit {
-        file: file_path.to_path_buf(),
-        byte_start,
-        byte_end,
-        new_text,
-        expected_before: verification,
-    };
-
-    match edit.apply()? {
-        EditResult::Applied { file, .. } => Ok(PatchResult::Applied { file }),
-        EditResult::AlreadyApplied { file } => Ok(PatchResult::AlreadyApplied { file }),
-    }
-}
-
 /// Find matches using ast-grep
 fn find_ast_grep_matches(content: &str, pattern: &str) -> Result<Vec<(usize, usize)>, String> {
     let matcher = PatternMatcher::new(content);
@@ -1279,42 +934,265 @@ fn find_ast_grep_matches(content: &str, pattern: &str) -> Result<Vec<(usize, usi
         .collect())
 }
 
-/// Find matches using tree-sitter (pooled parser for performance)
+/// Parse a tree-sitter pattern string into a `StructuralTarget`.
+///
+/// Accepts two forms:
+///
+/// **S-expression** (starts with `(`): passed directly to the tree-sitter query
+/// engine as a `Custom` target. The query must include at least one capture
+/// that spans the desired replacement range.
+///
+/// **DSL shorthand**: a human-readable prefix syntax that maps to well-known
+/// `StructuralTarget` variants:
+///
+/// | Pattern | Target |
+/// |---|---|
+/// | `fn name` | `Function { name }` |
+/// | `fn Type::method` | `Method { type_name, method_name }` |
+/// | `struct Name` | `Struct { name }` |
+/// | `enum Name` | `Enum { name }` |
+/// | `const NAME` | `Const { name }` |
+/// | `const /regex/` | `ConstMatching { pattern }` |
+/// | `static NAME` | `Static { name }` |
+/// | `impl Type` | `Impl { type_name }` |
+/// | `impl Trait for Type` | `ImplTrait { trait_name, type_name }` |
+/// | `use path_pattern` | `Use { path_pattern }` |
+fn parse_tree_sitter_pattern(pattern: &str) -> Result<StructuralTarget, String> {
+    let pattern = pattern.trim();
+
+    // Raw S-expression tree-sitter query
+    if pattern.starts_with('(') {
+        return Ok(StructuralTarget::Custom {
+            query: pattern.to_string(),
+        });
+    }
+
+    // DSL: `fn Type::method` or `fn name`
+    if let Some(rest) = pattern.strip_prefix("fn ") {
+        let rest = rest.trim();
+        if let Some((type_name, method_name)) = rest.split_once("::") {
+            return Ok(StructuralTarget::Method {
+                type_name: type_name.trim().to_string(),
+                method_name: method_name.trim().to_string(),
+            });
+        }
+        return Ok(StructuralTarget::Function {
+            name: rest.to_string(),
+        });
+    }
+
+    // DSL: `struct Name`
+    if let Some(name) = pattern.strip_prefix("struct ") {
+        return Ok(StructuralTarget::Struct {
+            name: name.trim().to_string(),
+        });
+    }
+
+    // DSL: `enum Name`
+    if let Some(name) = pattern.strip_prefix("enum ") {
+        return Ok(StructuralTarget::Enum {
+            name: name.trim().to_string(),
+        });
+    }
+
+    // DSL: `const /regex/` or `const NAME`
+    if let Some(rest) = pattern.strip_prefix("const ") {
+        let rest = rest.trim();
+        if rest.starts_with('/') && rest.ends_with('/') && rest.len() > 1 {
+            let regex_pattern = &rest[1..rest.len() - 1];
+            return Ok(StructuralTarget::ConstMatching {
+                pattern: regex_pattern.to_string(),
+            });
+        }
+        return Ok(StructuralTarget::Const {
+            name: rest.to_string(),
+        });
+    }
+
+    // DSL: `static NAME`
+    if let Some(name) = pattern.strip_prefix("static ") {
+        return Ok(StructuralTarget::Static {
+            name: name.trim().to_string(),
+        });
+    }
+
+    // DSL: `impl Trait for Type` or `impl Type`
+    if let Some(rest) = pattern.strip_prefix("impl ") {
+        let rest = rest.trim();
+        if let Some(for_pos) = rest.find(" for ") {
+            let trait_name = rest[..for_pos].trim();
+            let type_name = rest[for_pos + 5..].trim();
+            return Ok(StructuralTarget::ImplTrait {
+                trait_name: trait_name.to_string(),
+                type_name: type_name.to_string(),
+            });
+        }
+        return Ok(StructuralTarget::Impl {
+            type_name: rest.to_string(),
+        });
+    }
+
+    // DSL: `use path_pattern`
+    if let Some(path_pattern) = pattern.strip_prefix("use ") {
+        return Ok(StructuralTarget::Use {
+            path_pattern: path_pattern.trim().to_string(),
+        });
+    }
+
+    Err(format!(
+        "unrecognized tree-sitter pattern: {:?}. \
+        Use S-expression syntax (starting with '(') or a DSL shorthand: \
+        fn name, fn Type::method, struct Name, enum Name, const NAME, \
+        const /regex/, static NAME, impl Type, impl Trait for Type, use path_pattern",
+        pattern
+    ))
+}
+
+/// Find matches using tree-sitter (pooled parser for performance).
+///
+/// Accepts the DSL shorthand or raw S-expression syntax described in
+/// [`parse_tree_sitter_pattern`].
 fn find_tree_sitter_matches(content: &str, pattern: &str) -> Result<Vec<(usize, usize)>, String> {
     use crate::ts::locator::pooled;
 
-    // Use pooled parser for performance - avoids redundant parser creation
-    // This is a simplified implementation - full tree-sitter query support would be more complex
+    let target = parse_tree_sitter_pattern(pattern)?;
 
-    // Try to extract a simple function pattern
-    // This is a placeholder - real implementation would parse the tree-sitter query
-    if pattern.contains("fn ") {
-        // Extract function name from pattern (very basic)
-        let fn_name = pattern
-            .split("fn ")
-            .nth(1)
-            .and_then(|s| s.split('(').next())
-            .map(|s| s.trim())
-            .ok_or_else(|| "cannot extract function name from pattern".to_string())?;
+    // For Method targets the query engine's union span runs from the impl's type
+    // identifier all the way to the method body — wider than the method alone.
+    // Extract the dedicated `@method` capture to get the correct replacement span.
+    let is_method = matches!(target, StructuralTarget::Method { .. });
 
-        let span = pooled::locate(
-            content,
-            &StructuralTarget::Function {
-                name: fn_name.to_string(),
-            },
-        )
-        .map_err(|e| format!("locator error: {}", e))?;
+    let results =
+        pooled::locate_all(content, &target).map_err(|e| format!("tree-sitter error: {}", e))?;
 
-        Ok(vec![(span.byte_start, span.byte_end)])
-    } else {
-        Err("complex tree-sitter patterns not yet supported".to_string())
-    }
+    Ok(results
+        .into_iter()
+        .map(|r| {
+            if is_method {
+                r.captures
+                    .get("method")
+                    .map(|c| (c.byte_start, c.byte_end))
+                    .unwrap_or((r.byte_start, r.byte_end))
+            } else {
+                (r.byte_start, r.byte_end)
+            }
+        })
+        .collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::schema::Metadata;
+
+    // -------------------------------------------------------------------------
+    // parse_tree_sitter_pattern unit tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn ts_parse_fn_name() {
+        assert!(matches!(
+            parse_tree_sitter_pattern("fn hello"),
+            Ok(StructuralTarget::Function { name }) if name == "hello"
+        ));
+    }
+
+    #[test]
+    fn ts_parse_method() {
+        assert!(matches!(
+            parse_tree_sitter_pattern("fn Foo::bar"),
+            Ok(StructuralTarget::Method { type_name, method_name })
+                if type_name == "Foo" && method_name == "bar"
+        ));
+    }
+
+    #[test]
+    fn ts_parse_struct() {
+        assert!(matches!(
+            parse_tree_sitter_pattern("struct Config"),
+            Ok(StructuralTarget::Struct { name }) if name == "Config"
+        ));
+    }
+
+    #[test]
+    fn ts_parse_enum() {
+        assert!(matches!(
+            parse_tree_sitter_pattern("enum Status"),
+            Ok(StructuralTarget::Enum { name }) if name == "Status"
+        ));
+    }
+
+    #[test]
+    fn ts_parse_const_by_name() {
+        assert!(matches!(
+            parse_tree_sitter_pattern("const MAX_SIZE"),
+            Ok(StructuralTarget::Const { name }) if name == "MAX_SIZE"
+        ));
+    }
+
+    #[test]
+    fn ts_parse_const_regex() {
+        assert!(matches!(
+            parse_tree_sitter_pattern("const /^STATSIG_/"),
+            Ok(StructuralTarget::ConstMatching { pattern }) if pattern == "^STATSIG_"
+        ));
+    }
+
+    #[test]
+    fn ts_parse_static() {
+        assert!(matches!(
+            parse_tree_sitter_pattern("static COUNTER"),
+            Ok(StructuralTarget::Static { name }) if name == "COUNTER"
+        ));
+    }
+
+    #[test]
+    fn ts_parse_impl() {
+        assert!(matches!(
+            parse_tree_sitter_pattern("impl Foo"),
+            Ok(StructuralTarget::Impl { type_name }) if type_name == "Foo"
+        ));
+    }
+
+    #[test]
+    fn ts_parse_impl_trait() {
+        assert!(matches!(
+            parse_tree_sitter_pattern("impl Display for Foo"),
+            Ok(StructuralTarget::ImplTrait { trait_name, type_name })
+                if trait_name == "Display" && type_name == "Foo"
+        ));
+    }
+
+    #[test]
+    fn ts_parse_use() {
+        assert!(matches!(
+            parse_tree_sitter_pattern("use std::collections"),
+            Ok(StructuralTarget::Use { path_pattern }) if path_pattern == "std::collections"
+        ));
+    }
+
+    #[test]
+    fn ts_parse_sexpr() {
+        let q = "(function_item) @func";
+        assert!(matches!(
+            parse_tree_sitter_pattern(q),
+            Ok(StructuralTarget::Custom { query }) if query == q
+        ));
+    }
+
+    #[test]
+    fn ts_parse_unknown_errors() {
+        assert!(parse_tree_sitter_pattern("xyz unknown").is_err());
+        let err = parse_tree_sitter_pattern("xyz unknown").unwrap_err();
+        assert!(
+            err.contains("unrecognized"),
+            "error message should be descriptive: {err}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Applicator integration tests
+    // -------------------------------------------------------------------------
 
     #[test]
     fn test_apply_patches_version_filtering() {

@@ -1,0 +1,185 @@
+# =============================================================================
+# NATIVE CA ROOTS - Enable System Certificate Store for TLS
+# =============================================================================
+#
+# Switches reqwest from bundled webpki roots to native system CA store.
+# This allows MITM inspection of Codex API traffic using tools like mitmproxy
+# when SSL_CERT_FILE points to a custom CA bundle.
+#
+# After applying this patch and rebuilding:
+#   export SSL_CERT_FILE="$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
+#   export HTTPS_PROXY="http://127.0.0.1:8080"
+#   mitmproxy -p 8080
+#   codex
+#
+# Files modified:
+# - backend-client/Cargo.toml
+# - codex-api/Cargo.toml
+# - codex-client/Cargo.toml
+# - core/Cargo.toml
+# - login/Cargo.toml
+# - otel/Cargo.toml
+# - responses-api-proxy/Cargo.toml
+# - rmcp-client/Cargo.toml
+# - tui/Cargo.toml
+#
+# Version: Targets Codex rust-v0.108.0-alpha.1 and later
+# =============================================================================
+
+[meta]
+name = "native-ca-roots"
+description = "Use system CA store instead of bundled webpki roots for TLS inspection"
+version_range = ">=0.108.0-alpha.1"
+workspace_relative = true
+
+# =============================================================================
+# backend-client/Cargo.toml
+# =============================================================================
+
+[[patches]]
+id = "native-ca-backend-client"
+file = "backend-client/Cargo.toml"
+
+[patches.query]
+type = "text"
+search = 'reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }'
+
+[patches.operation]
+type = "replace"
+text = 'reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }'
+
+# =============================================================================
+# otel/Cargo.toml
+# =============================================================================
+
+[[patches]]
+id = "native-ca-otel"
+file = "otel/Cargo.toml"
+
+[patches.query]
+type = "text"
+search = 'reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }'
+
+[patches.operation]
+type = "replace"
+text = 'reqwest = { workspace = true, features = ["blocking", "rustls-tls-native-roots"] }'
+
+# =============================================================================
+# responses-api-proxy/Cargo.toml
+# =============================================================================
+
+[[patches]]
+id = "native-ca-responses-api-proxy"
+file = "responses-api-proxy/Cargo.toml"
+
+[patches.query]
+type = "text"
+search = 'reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }'
+
+[patches.operation]
+type = "replace"
+text = 'reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls-native-roots"] }'
+
+# =============================================================================
+# core/Cargo.toml
+# =============================================================================
+
+[[patches]]
+id = "native-ca-core"
+file = "core/Cargo.toml"
+
+[patches.query]
+type = "text"
+search = 'reqwest = { workspace = true, features = ["json", "stream"] }'
+
+[patches.operation]
+type = "replace"
+text = 'reqwest = { workspace = true, default-features = false, features = ["json", "stream", "rustls-tls-native-roots"] }'
+
+# =============================================================================
+# rmcp-client/Cargo.toml
+# =============================================================================
+
+[[patches]]
+id = "native-ca-rmcp-client"
+file = "rmcp-client/Cargo.toml"
+
+[patches.query]
+type = "text"
+search = '''reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "stream",
+    "rustls-tls",
+] }'''
+
+[patches.operation]
+type = "replace"
+text = '''reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "stream",
+    "rustls-tls-native-roots",
+] }'''
+
+# =============================================================================
+# codex-client/Cargo.toml
+# =============================================================================
+
+[[patches]]
+id = "native-ca-codex-client"
+file = "codex-client/Cargo.toml"
+
+[patches.query]
+type = "text"
+search = 'reqwest = { workspace = true, features = ["json", "stream"] }'
+
+[patches.operation]
+type = "replace"
+text = 'reqwest = { workspace = true, default-features = false, features = ["json", "stream", "rustls-tls-native-roots"] }'
+
+# =============================================================================
+# login/Cargo.toml
+# =============================================================================
+
+[[patches]]
+id = "native-ca-login"
+file = "login/Cargo.toml"
+
+[patches.query]
+type = "text"
+search = 'reqwest = { workspace = true, features = ["json", "blocking"] }'
+
+[patches.operation]
+type = "replace"
+text = 'reqwest = { workspace = true, default-features = false, features = ["json", "blocking", "rustls-tls-native-roots"] }'
+
+# =============================================================================
+# tui/Cargo.toml
+# =============================================================================
+
+[[patches]]
+id = "native-ca-tui"
+file = "tui/Cargo.toml"
+
+[patches.query]
+type = "text"
+search = 'reqwest = { workspace = true, features = ["json", "multipart"] }'
+
+[patches.operation]
+type = "replace"
+text = 'reqwest = { workspace = true, default-features = false, features = ["json", "multipart", "rustls-tls-native-roots"] }'
+
+# =============================================================================
+# codex-api/Cargo.toml
+# =============================================================================
+
+[[patches]]
+id = "native-ca-codex-api"
+file = "codex-api/Cargo.toml"
+
+[patches.query]
+type = "text"
+search = 'reqwest = { workspace = true }'
+
+[patches.operation]
+type = "replace"
+text = 'reqwest = { workspace = true, default-features = false, features = ["rustls-tls-native-roots"] }'

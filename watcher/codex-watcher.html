@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codex Traffic Watcher</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0d1117;
+    --surface:   #161b22;
+    --border:    #30363d;
+    --text:      #e6edf3;
+    --muted:     #8b949e;
+    --req-bg:    #0d1b2e;
+    --req-border:#1d4ed8;
+    --res-bg:    #0b1e14;
+    --res-border:#15803d;
+    --err-bg:    #2a0f0f;
+    --err-border:#dc2626;
+    --accent:    #58a6ff;
+    --mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
+  }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    overflow: hidden;
+  }
+
+  /* ---- Header ---- */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 8px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 100;
+    height: 38px;
+  }
+  header h1 {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--text);
+    white-space: nowrap;
+  }
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #dc2626;
+    flex-shrink: 0;
+    transition: background 0.3s;
+  }
+  .status-dot.connected { background: #22c55e; }
+  .status-label {
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .header-stats {
+    margin-left: auto;
+    display: flex;
+    gap: 20px;
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .header-stats span { color: var(--text); }
+
+  /* ---- Sessions grid ---- */
+  #sessions-wrap {
+    position: fixed;
+    top: 38px; bottom: 0; left: 0; right: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    display: flex;
+  }
+  #sessions-grid {
+    display: flex;
+    flex-direction: row;
+    gap: 1px;
+    min-height: 100%;
+    background: var(--border);
+  }
+  .session-card {
+    width: 380px;
+    min-width: 380px;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    overflow: hidden;
+  }
+
+  /* ---- Session header ---- */
+  .session-header {
+    padding: 8px 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .session-id-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  .session-id {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: 0.04em;
+  }
+  .session-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    background: #21262d;
+    color: var(--muted);
+  }
+  .session-stats {
+    display: flex;
+    gap: 12px;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .session-stats .val { color: var(--text); }
+
+  /* ---- Message list ---- */
+  .message-list {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 6px 0;
+    scroll-behavior: smooth;
+  }
+  .message-list::-webkit-scrollbar { width: 4px; }
+  .message-list::-webkit-scrollbar-track { background: transparent; }
+  .message-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* ---- Individual message ---- */
+  .message {
+    margin: 4px 8px;
+    border-radius: 4px;
+    border-left: 3px solid transparent;
+    overflow: hidden;
+  }
+  .message.req { background: var(--req-bg); border-left-color: var(--req-border); }
+  .message.res { background: var(--res-bg); border-left-color: var(--res-border); }
+  .message.err { background: var(--err-bg); border-left-color: var(--err-border); }
+
+  .msg-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .msg-header:hover { background: rgba(255,255,255,0.04); }
+  .msg-dir {
+    font-size: 11px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .req .msg-dir { color: #60a5fa; }
+  .res .msg-dir { color: #4ade80; }
+  .err .msg-dir { color: #f87171; }
+  .msg-method {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+  .msg-url {
+    font-size: 10px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+  }
+  .msg-status {
+    font-size: 10px;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .msg-status.ok { color: #4ade80; }
+  .msg-status.err { color: #f87171; }
+  .msg-tokens {
+    font-size: 10px;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+  .msg-ts {
+    font-size: 10px;
+    color: #444d56;
+    flex-shrink: 0;
+  }
+  .msg-expand {
+    font-size: 10px;
+    color: var(--muted);
+    flex-shrink: 0;
+    transition: transform 0.15s;
+  }
+  .msg-expand.open { transform: rotate(180deg); }
+
+  /* ---- Message body ---- */
+  .msg-body {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.2s ease;
+  }
+  .msg-body.open {
+    max-height: 600px;
+    overflow-y: auto;
+  }
+  .msg-body::-webkit-scrollbar { width: 4px; }
+  .msg-body::-webkit-scrollbar-thumb { background: var(--border); }
+  .msg-body pre {
+    padding: 8px 10px;
+    font-size: 10px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: #c9d1d9;
+    border-top: 1px solid rgba(255,255,255,0.06);
+  }
+
+  /* JSON syntax highlighting */
+  .jk { color: #79c0ff; }   /* key */
+  .js { color: #a5d6ff; }   /* string value */
+  .jn { color: #ff7b72; }   /* number */
+  .jb { color: #d2a8ff; }   /* boolean/null */
+
+  /* ---- Empty state ---- */
+  .empty-state {
+    position: fixed;
+    top: 38px; left: 0; right: 0; bottom: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    color: var(--muted);
+    font-size: 12px;
+    pointer-events: none;
+  }
+  .empty-state.hidden { display: none; }
+  .empty-icon {
+    font-size: 32px;
+    opacity: 0.3;
+    letter-spacing: -2px;
+  }
+  .empty-title { font-size: 14px; font-weight: 600; color: #444d56; }
+  .empty-cmd {
+    font-size: 11px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 6px 12px;
+    border-radius: 4px;
+    color: #8b949e;
+  }
+
+  /* ---- Setup panel ---- */
+  #setup-panel {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    z-index: 100;
+    transition: height 0.2s ease;
+    height: 32px;
+    overflow: hidden;
+  }
+  #setup-panel.open { height: 280px; }
+  #setup-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    cursor: pointer;
+    font-size: 11px;
+    color: var(--muted);
+    border: none;
+    background: transparent;
+    width: 100%;
+    text-align: left;
+    font-family: var(--mono);
+  }
+  #setup-toggle:hover { color: var(--text); }
+  #setup-body {
+    padding: 0 16px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    height: calc(100% - 32px);
+    overflow: hidden;
+  }
+  #setup-body pre {
+    flex: 1;
+    overflow: auto;
+    font-size: 10px;
+    line-height: 1.5;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 10px;
+    color: #c9d1d9;
+  }
+  #setup-body pre::-webkit-scrollbar { width: 4px; height: 4px; }
+  #setup-body pre::-webkit-scrollbar-thumb { background: var(--border); }
+  .setup-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .btn {
+    padding: 3px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: #21262d;
+    color: var(--text);
+    font-size: 11px;
+    font-family: var(--mono);
+    cursor: pointer;
+  }
+  .btn:hover { background: #30363d; }
+  .btn:active { background: #21262d; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="status-dot" id="status-dot"></div>
+  <h1>Codex Traffic Watcher</h1>
+  <span class="status-label" id="status-label">Connecting...</span>
+  <div class="header-stats">
+    <span id="stat-sessions">0</span> sessions &nbsp;|&nbsp;
+    <span id="stat-messages">0</span> messages &nbsp;|&nbsp;
+    <span id="stat-tokens">0</span> tokens
+  </div>
+</header>
+
+<div id="sessions-wrap">
+  <div id="sessions-grid"></div>
+</div>
+
+<div class="empty-state" id="empty-state">
+  <div class="empty-icon">→ ←</div>
+  <div class="empty-title">No traffic yet</div>
+  <div class="empty-cmd">mitmdump -s codex-sse-server.py -p 8181</div>
+  <div class="empty-cmd">CODEX_INTERCEPT_PROXY=1 codex-bolt</div>
+</div>
+
+<div id="setup-panel">
+  <button id="setup-toggle" onclick="toggleSetup()">▲ Setup / Server Script</button>
+  <div id="setup-body">
+    <div class="setup-toolbar">
+      <span>Save as <code>codex-sse-server.py</code> then run:</span>
+      <code>mitmdump -s codex-sse-server.py -p 8181</code>
+      <button class="btn" onclick="copyScript()">Copy Script</button>
+    </div>
+    <pre id="server-script-pre"></pre>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// State
+// ============================================================
+const sessions = {};   // id → { el, messages, tokens, lastTs, reqCount, resCount }
+let totalMessages = 0;
+let totalTokens = 0;
+let es = null;
+
+// ============================================================
+// EventSource connection
+// ============================================================
+function connect() {
+  if (es) { es.close(); }
+  es = new EventSource('http://localhost:9119/stream');
+
+  es.addEventListener('flow', (e) => {
+    try { handleFlow(JSON.parse(e.data)); }
+    catch(err) { console.error('parse error', err, e.data); }
+  });
+
+  es.onopen = () => {
+    document.getElementById('status-dot').classList.add('connected');
+    document.getElementById('status-label').textContent = 'Connected';
+  };
+
+  es.onerror = () => {
+    document.getElementById('status-dot').classList.remove('connected');
+    document.getElementById('status-label').textContent = 'Reconnecting...';
+    es.close();
+    setTimeout(connect, 3000);
+  };
+}
+
+// ============================================================
+// Flow handling
+// ============================================================
+function handleFlow(flow) {
+  const sid = flow.session_id;
+  if (!sessions[sid]) {
+    sessions[sid] = createSession(sid);
+    updateEmptyState();
+  }
+  addMessage(sessions[sid], flow);
+  totalMessages++;
+  totalTokens += (flow.tokens || 0);
+  updateHeaderStats();
+}
+
+function updateHeaderStats() {
+  document.getElementById('stat-sessions').textContent = Object.keys(sessions).length;
+  document.getElementById('stat-messages').textContent = totalMessages;
+  document.getElementById('stat-tokens').textContent = fmtTokens(totalTokens);
+}
+
+function updateEmptyState() {
+  const empty = document.getElementById('empty-state');
+  if (Object.keys(sessions).length > 0) {
+    empty.classList.add('hidden');
+  }
+}
+
+// ============================================================
+// Session card creation
+// ============================================================
+function createSession(sid) {
+  const card = document.createElement('div');
+  card.className = 'session-card';
+  card.innerHTML = `
+    <div class="session-header">
+      <div class="session-id-row">
+        <span class="session-id">${sid.slice(0,12)}</span>
+        <span class="session-badge" id="badge-${sid}">0 req</span>
+      </div>
+      <div class="session-stats">
+        <span>msgs: <span class="val" id="s-msgs-${sid}">0</span></span>
+        <span>tokens: <span class="val" id="s-tok-${sid}">0</span></span>
+        <span>last: <span class="val" id="s-ts-${sid}">—</span></span>
+      </div>
+    </div>
+    <div class="message-list" id="ml-${sid}"></div>
+  `;
+  document.getElementById('sessions-grid').appendChild(card);
+
+  const state = { el: card, messages: [], tokens: 0, lastTs: null, reqCount: 0, resCount: 0 };
+  sessions[sid] = state;
+  return state;
+}
+
+// ============================================================
+// Message rendering
+// ============================================================
+function addMessage(session, flow) {
+  const isReq = flow.direction === 'request';
+  const isErr = flow.status && flow.status >= 400;
+  const cls = isErr ? 'err' : (isReq ? 'req' : 'res');
+  const dirLabel = isReq ? '→ REQ' : '← RES';
+  const path = urlPath(flow.url);
+  const sid = flow.session_id;
+
+  const msgId = `msg-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
+
+  const bodyHtml = flow.body
+    ? `<div class="msg-body" id="${msgId}">
+         <pre>${syntaxColor(flow.body)}</pre>
+       </div>`
+    : '';
+
+  const div = document.createElement('div');
+  div.className = `message ${cls}`;
+  div.innerHTML = `
+    <div class="msg-header" onclick="toggleBody('${msgId}', this)">
+      <span class="msg-dir">${dirLabel}</span>
+      <span class="msg-method">${flow.method || ''}</span>
+      <span class="msg-url" title="${flow.url}">${path}</span>
+      ${flow.status ? `<span class="msg-status ${isErr?'err':'ok'}">${flow.status}</span>` : ''}
+      ${flow.tokens ? `<span class="msg-tokens">~${fmtTokens(flow.tokens)}t</span>` : ''}
+      <span class="msg-ts" data-ts="${flow.ts}">${relTime(flow.ts)}</span>
+      ${flow.body ? '<span class="msg-expand">▾</span>' : ''}
+    </div>
+    ${bodyHtml}
+  `;
+
+  session.messages.push(div);
+  session.tokens += (flow.tokens || 0);
+  session.lastTs = flow.ts;
+  if (isReq) session.reqCount++; else session.resCount++;
+
+  const ml = document.getElementById(`ml-${sid}`);
+  ml.appendChild(div);
+  ml.scrollTop = ml.scrollHeight;
+
+  // Update session stats
+  const total = session.reqCount + session.resCount;
+  document.getElementById(`s-msgs-${sid}`).textContent = total;
+  document.getElementById(`s-tok-${sid}`).textContent = fmtTokens(session.tokens);
+  document.getElementById(`s-ts-${sid}`).textContent = relTime(flow.ts);
+  document.getElementById(`badge-${sid}`).textContent = `${session.reqCount} req`;
+}
+
+// ============================================================
+// Body toggle
+// ============================================================
+function toggleBody(msgId, header) {
+  const body = document.getElementById(msgId);
+  if (!body) return;
+  const arrow = header.querySelector('.msg-expand');
+  const open = body.classList.toggle('open');
+  if (arrow) arrow.classList.toggle('open', open);
+}
+
+// ============================================================
+// JSON syntax highlighting (no lib, just regex)
+// ============================================================
+function syntaxColor(data) {
+  let text;
+  if (Array.isArray(data)) {
+    // streaming chunks — show first 30 entries
+    text = JSON.stringify(data.slice(0, 30), null, 2);
+    if (data.length > 30) text += `\n  ... ${data.length - 30} more chunks`;
+  } else if (typeof data === 'object' && data !== null) {
+    text = JSON.stringify(data, null, 2);
+  } else {
+    text = String(data);
+  }
+  // Cap total display length
+  if (text.length > 8000) {
+    text = text.slice(0, 8000) + '\n... (truncated)';
+  }
+  return escHtml(text)
+    .replace(/"([^"]+)":/g, '<span class="jk">"$1"</span>:')
+    .replace(/: "([^"]*)"/g, ': <span class="js">"$1"</span>')
+    .replace(/: (-?\d+\.?\d*)/g, ': <span class="jn">$1</span>')
+    .replace(/: (true|false|null)/g, ': <span class="jb">$1</span>');
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ============================================================
+// Utilities
+// ============================================================
+function urlPath(url) {
+  try {
+    const u = new URL(url);
+    return u.pathname + (u.search ? '?' + u.search.slice(1,40) : '');
+  } catch { return url; }
+}
+
+function fmtTokens(n) {
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return n.toString();
+}
+
+function relTime(ts) {
+  if (!ts) return '—';
+  const diff = Math.floor(Date.now() / 1000 - ts);
+  if (diff < 5) return 'now';
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  return `${Math.floor(diff/3600)}h ago`;
+}
+
+// Update relative timestamps every 10s
+setInterval(() => {
+  document.querySelectorAll('.msg-ts[data-ts]').forEach(el => {
+    el.textContent = relTime(parseFloat(el.dataset.ts));
+  });
+  Object.entries(sessions).forEach(([sid, s]) => {
+    const el = document.getElementById(`s-ts-${sid}`);
+    if (el && s.lastTs) el.textContent = relTime(s.lastTs);
+  });
+}, 10_000);
+
+// ============================================================
+// Setup panel
+// ============================================================
+let setupOpen = false;
+function toggleSetup() {
+  setupOpen = !setupOpen;
+  document.getElementById('setup-panel').classList.toggle('open', setupOpen);
+  document.getElementById('setup-toggle').textContent =
+    (setupOpen ? '▼' : '▲') + ' Setup / Server Script';
+  // Adjust sessions wrap bottom padding
+  document.getElementById('sessions-wrap').style.bottom =
+    setupOpen ? '280px' : '32px';
+}
+
+function copyScript() {
+  const text = PYTHON_SERVER_SCRIPT;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  });
+}
+
+// ============================================================
+// Embedded server script (verbatim copy of codex-sse-server.py)
+// ============================================================
+const PYTHON_SERVER_SCRIPT = `#!/usr/bin/env python3
+"""
+Codex Traffic Watcher - mitmproxy addon + SSE server
+
+Usage:
+    mitmdump -s codex-sse-server.py -p 8181
+
+Then open codex-watcher.html in a browser.
+The watcher connects to http://localhost:9119/stream via EventSource.
+
+Requires: mitmproxy (pip install mitmproxy)
+"""
+
+import json
+import queue
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+from mitmproxy import http
+
+SSE_PORT = 9119
+MAX_BODY_BYTES = 65_536  # 64KB cap before truncation
+
+# --- SSE subscriber registry ---
+_subscribers: list[queue.Queue] = []
+_lock = threading.Lock()
+
+
+def _broadcast(event_type: str, payload: dict) -> None:
+    msg = f"event: {event_type}\\ndata: {json.dumps(payload)}\\n\\n".encode()
+    with _lock:
+        dead = []
+        for q in _subscribers:
+            try:
+                q.put_nowait(msg)
+            except queue.Full:
+                dead.append(q)
+        for q in dead:
+            _subscribers.remove(q)
+
+
+class _SSEHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/stream":
+            self._stream()
+        elif self.path in ("/", "/health"):
+            self._health()
+        else:
+            self.send_error(404)
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self._cors()
+        self.end_headers()
+
+    def _cors(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def _health(self):
+        body = b'{"status":"ok"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self._cors()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _stream(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")
+        self._cors()
+        self.end_headers()
+
+        q: queue.Queue = queue.Queue(maxsize=256)
+        with _lock:
+            _subscribers.append(q)
+
+        try:
+            while True:
+                try:
+                    msg = q.get(timeout=25)
+                    self.wfile.write(msg)
+                    self.wfile.flush()
+                except queue.Empty:
+                    self.wfile.write(b": ping\\n\\n")
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            with _lock:
+                try:
+                    _subscribers.remove(q)
+                except ValueError:
+                    pass
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+def _start_sse_server():
+    server = HTTPServer(("127.0.0.1", SSE_PORT), _SSEHandler)
+    server.serve_forever()
+
+
+def _session_id_from_request(flow: http.HTTPFlow) -> str:
+    hdrs = flow.request.headers
+    return (
+        hdrs.get("x-session-id")
+        or hdrs.get("x-oai-request-id")
+        or flow.client_conn.id[:12]
+    )
+
+
+def _session_id_from_response(flow: http.HTTPFlow) -> str:
+    rhdrs = flow.response.headers if flow.response else {}
+    return (
+        rhdrs.get("x-request-id")
+        or rhdrs.get("x-oai-request-id")
+        or _session_id_from_request(flow)
+    )
+
+
+def _parse_body(raw: bytes, content_type: str) -> tuple[object, int]:
+    if not raw:
+        return None, 0
+
+    if "event-stream" in content_type:
+        lines = raw.decode("utf-8", errors="replace").splitlines()
+        data_lines = [l[6:] for l in lines if l.startswith("data: ") and l != "data: [DONE]"]
+        parsed = []
+        total_tokens = 0
+        for dl in data_lines[:100]:
+            try:
+                obj = json.loads(dl)
+                parsed.append(obj)
+                if isinstance(obj, dict):
+                    usage = obj.get("usage") or {}
+                    total_tokens = max(total_tokens, usage.get("total_tokens", 0))
+            except json.JSONDecodeError:
+                parsed.append(dl)
+        estimate = total_tokens or (len(raw) // 4)
+        return parsed, estimate
+
+    truncated = raw[:MAX_BODY_BYTES]
+    try:
+        obj = json.loads(truncated)
+        usage = {}
+        if isinstance(obj, dict):
+            usage = obj.get("usage") or {}
+        total_tokens = usage.get("total_tokens", 0)
+        estimate = total_tokens or (len(raw) // 4)
+        return obj, estimate
+    except json.JSONDecodeError:
+        text = truncated.decode("utf-8", errors="replace")
+        return text, len(raw) // 4
+
+
+def _is_openai(flow: http.HTTPFlow) -> bool:
+    host = flow.request.pretty_host()
+    return "openai.com" in host or "api.openai" in host
+
+
+class CodexWatcher:
+    def load(self, loader):
+        t = threading.Thread(target=_start_sse_server, daemon=True)
+        t.start()
+        print(f"[codex-watcher] SSE server listening on http://127.0.0.1:{SSE_PORT}/stream")
+
+    def request(self, flow: http.HTTPFlow) -> None:
+        if not _is_openai(flow):
+            return
+        body, tokens = _parse_body(
+            flow.request.content,
+            flow.request.headers.get("content-type", ""),
+        )
+        _broadcast("flow", {
+            "session_id": _session_id_from_request(flow),
+            "direction": "request",
+            "method": flow.request.method,
+            "url": flow.request.pretty_url(),
+            "status": None,
+            "body": body,
+            "tokens": tokens,
+            "ts": time.time(),
+        })
+
+    def response(self, flow: http.HTTPFlow) -> None:
+        if not _is_openai(flow):
+            return
+        body, tokens = _parse_body(
+            flow.response.content if flow.response else b"",
+            flow.response.headers.get("content-type", "") if flow.response else "",
+        )
+        _broadcast("flow", {
+            "session_id": _session_id_from_response(flow),
+            "direction": "response",
+            "method": flow.request.method,
+            "url": flow.request.pretty_url(),
+            "status": flow.response.status_code if flow.response else None,
+            "body": body,
+            "tokens": tokens,
+            "ts": time.time(),
+        })
+
+
+addons = [CodexWatcher()]
+`;
+
+document.getElementById('server-script-pre').textContent = PYTHON_SERVER_SCRIPT;
+
+// ============================================================
+// Init
+// ============================================================
+// Adjust wrap for setup panel
+document.getElementById('sessions-wrap').style.bottom = '32px';
+connect();
+</script>
+</body>
+</html>
