@@ -43,3 +43,17 @@ USAGE_EXAMPLES.md
 # Development tools
 find-subagent-limit.sh
 justfile
+
+# Testing scratch
+patches/archived/interp-tests1/
+
+# Generated / local data
+db/
+**/__pycache__/
+
+# Local tooling / experimental
+patches/archived/
+patches/native-ca-roots.toml
+patches/proxy-intercept.toml
+watcher/
+scripts/build_codex_version_patch_db.py
