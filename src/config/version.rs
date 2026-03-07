@@ -82,16 +82,49 @@ pub fn matches_requirement(version: &str, requirement: Option<&str>) -> Result<b
     // we retry the match with the pre-release stripped.  This preserves correct
     // behavior for intra-minor alpha ranges (e.g. >=0.99.0-alpha.10,
     // <0.99.0-alpha.14 must NOT match 0.99.0-alpha.20).
+    //
+    // Guard: if ANY upper-bound comparator has a pre-release tag and the version's
+    // base strictly exceeds that comparator's base, the version is clearly above
+    // the upper bound.  Stripping the pre-release and retrying would cause the
+    // semver crate to silently ignore that comparator (it only evaluates
+    // pre-release comparators against versions with the same major.minor.patch),
+    // producing a false positive match.  Skip the retry in that case.
     if !version.pre.is_empty() {
+        // A pre-release version (e.g. 0.106.0-alpha.5) is "dominated" when the
+        // semver crate would evaluate it incorrectly: it refuses to apply any
+        // comparator whose pre-release tag references a *different* major.minor.patch,
+        // so both `>=0.105.0-alpha.13` and `<0.108.0-alpha.1` return false for
+        // 0.106.0-alpha.5, even though it is clearly in range.
+        //
+        // We retry with the pre-release stripped when:
+        //   (a) every LOWER-BOUND comparator's base is strictly below the version's
+        //       base (so the version is above all lower bounds), AND
+        //   (b) no UPPER-BOUND comparator has a pre-release tag for a base that the
+        //       version's base strictly EXCEEDS — that would mean the version is
+        //       above the upper bound, and the semver crate would silently ignore
+        //       that comparator after stripping, producing a false positive.
         let dominated = req.comparators.iter().all(|c| {
             let c_minor = c.minor.unwrap_or(0);
             let c_patch = c.patch.unwrap_or(0);
-            (version.major, version.minor, version.patch) > (c.major, c_minor, c_patch)
+            // Upper-bound comparators do not need to be below the version's base.
+            matches!(c.op, semver::Op::Less | semver::Op::LessEq)
+                || (version.major, version.minor, version.patch) > (c.major, c_minor, c_patch)
         });
         if dominated {
-            let base = Version::new(version.major, version.minor, version.patch);
-            if req.matches(&base) {
-                return Ok(true);
+            let exceeds_prerelease_upper = req.comparators.iter().any(|c| {
+                matches!(c.op, semver::Op::Less | semver::Op::LessEq)
+                    && !c.pre.is_empty()
+                    && {
+                        let c_minor = c.minor.unwrap_or(0);
+                        let c_patch = c.patch.unwrap_or(0);
+                        (version.major, version.minor, version.patch) > (c.major, c_minor, c_patch)
+                    }
+            });
+            if !exceeds_prerelease_upper {
+                let base = Version::new(version.major, version.minor, version.patch);
+                if req.matches(&base) {
+                    return Ok(true);
+                }
             }
         }
     }
@@ -216,5 +249,28 @@ mod tests {
         // Same minor.patch alpha ordering still works (no fallback triggered)
         assert!(!matches_requirement("0.99.0-alpha.12", Some(">=0.99.0-alpha.21")).unwrap());
         assert!(matches_requirement("0.99.0-alpha.22", Some(">=0.99.0-alpha.21")).unwrap());
+    }
+
+    #[test]
+    fn test_prerelease_upper_bound_not_exceeded() {
+        // Regression: v0.112.0-alpha.11 must NOT match a range capped at
+        // <0.108.0-alpha.1.  The old "dominated" fallback stripped the pre-release
+        // from 0.112.0-alpha.11 to get 0.112.0, then retried — but the semver
+        // crate ignores the <0.108.0-alpha.1 upper-bound comparator for 0.112.0
+        // (different major.minor.patch), leaving only the >= lower bound to
+        // match, producing a false positive.
+        let req = ">=0.105.0-alpha.13, <0.108.0-alpha.1";
+        assert!(!matches_requirement("0.112.0-alpha.11", Some(req)).unwrap());
+        assert!(!matches_requirement("0.108.0", Some(req)).unwrap());
+        assert!(!matches_requirement("0.109.0-alpha.1", Some(req)).unwrap());
+
+        // Versions within the range still match.
+        assert!(matches_requirement("0.105.0-alpha.13", Some(req)).unwrap());
+        assert!(matches_requirement("0.106.0-alpha.5", Some(req)).unwrap());
+        assert!(matches_requirement("0.107.0", Some(req)).unwrap());
+
+        // Open-ended lower-bound ranges (no pre-release upper bound) still use
+        // the fallback correctly.
+        assert!(matches_requirement("0.112.0-alpha.11", Some(">=0.105.0-alpha.13")).unwrap());
     }
 }

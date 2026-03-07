@@ -398,7 +398,7 @@ search = '''
 [patches.operation]
 type = "replace"
 text = '''
-    let _config = sess.get_config().await;
+    let config = sess.get_config().await;
     // PRIVACY PATCH: Removed experimental realtime config overrides.
     let prompt = params.prompt;
 '''
