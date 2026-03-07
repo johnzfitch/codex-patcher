@@ -51,44 +51,40 @@ file = "app-server/src/codex_message_processor.rs"
 [patches.query]
 type = "text"
 search = '''
-                    // Poll agent status rather than consuming events so attached listeners do not block shutdown.
-                    let wait_for_shutdown = async {
-                        loop {
-                            if matches!(conversation.agent_status().await, AgentStatus::Shutdown) {
-                                break;
-                            }
-                            tokio::time::sleep(Duration::from_millis(50)).await;
+                let wait_for_shutdown = async {
+                    loop {
+                        if matches!(thread.agent_status().await, AgentStatus::Shutdown) {
+                            break;
                         }
-                    };
-                    if tokio::time::timeout(Duration::from_secs(10), wait_for_shutdown)
-                        .await
-                        .is_err()
-                    {
-                        warn!("thread {thread_id} shutdown timed out; proceeding with archive");
+                        tokio::time::sleep(Duration::from_millis(50)).await;
                     }
+                };
+                if tokio::time::timeout(Duration::from_secs(10), wait_for_shutdown)
+                    .await
+                    .is_err()
+                {
+                    ThreadShutdownResult::TimedOut
 '''
 
 [patches.operation]
 type = "replace"
 text = '''
-                    // Wait on status updates rather than consuming events so attached listeners do not block shutdown.
-                    let mut status_rx = conversation.subscribe_status();
-                    let wait_for_shutdown = async move {
-                        if matches!(&*status_rx.borrow(), &AgentStatus::Shutdown) {
-                            return;
-                        }
-                        while status_rx.changed().await.is_ok() {
-                            if matches!(&*status_rx.borrow(), &AgentStatus::Shutdown) {
-                                break;
-                            }
-                        }
-                    };
-                    if tokio::time::timeout(Duration::from_secs(10), wait_for_shutdown)
-                        .await
-                        .is_err()
-                    {
-                        warn!("thread {thread_id} shutdown timed out; proceeding with archive");
+                let mut status_rx = thread.subscribe_status();
+                let wait_for_shutdown = async move {
+                    if matches!(&*status_rx.borrow(), &AgentStatus::Shutdown) {
+                        return;
                     }
+                    while status_rx.changed().await.is_ok() {
+                        if matches!(&*status_rx.borrow(), &AgentStatus::Shutdown) {
+                            break;
+                        }
+                    }
+                };
+                if tokio::time::timeout(Duration::from_secs(10), wait_for_shutdown)
+                    .await
+                    .is_err()
+                {
+                    ThreadShutdownResult::TimedOut
 '''
 
 # =============================================================================

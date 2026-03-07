@@ -8,7 +8,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Complete documentation with iconics icons
+- `fuzzy_expansion: Option<usize>` field on `Query::Text` — elastic fuzzy window that
+  tries window sizes `needle_lines..=needle_lines+N`, finding matches even when upstream
+  inserted lines inside the needle's span. Schema validation rejects values > 200.
+- `crate::fuzzy::find_best_match_elastic` — public API for elastic window matching,
+  pre-computing haystack line offsets once across all expansion iterations.
+- 9 new unit tests in `fuzzy.rs` covering exact match, similar match, byte positions,
+  trailing-newline offset correctness, elastic insertion bridging (with verified
+  Levenshtein scores), score comparison across expansions, and edge cases.
+- 5 new integration tests in `tests/integration/unified_patches.rs`: end-to-end
+  elastic apply, idempotency after elastic apply, and schema validation for
+  `fuzzy_expansion` boundary (200) and implicit-threshold behaviour.
+- `patches/io-drain-interp.toml` added to the patch library: instruments the exec IO
+  drain pipeline (`read_capped`, `await_with_timeout`, `child.wait`,
+  `consume_truncated_output`) with tracing hooks for end-to-end observability.
+  Includes an `exec_drain_trace` integration test that exercises the full path.
+- "Text query type" section in `patches/README.md` documenting `search`,
+  `fuzzy_threshold`, and `fuzzy_expansion` with an illustrated example of elastic
+  window behaviour across version bumps.
+- "Per-patch version constraints" prose in `patches/README.md` documenting the
+  patch-level `version` field and `SkippedVersion` result.
+
+### Fixed
+- **`io-drain-interp.toml` path doubling**: all five `[[patches]]` blocks used
+  `file = "codex-rs/core/src/exec.rs"` with `workspace_relative = true`. Because the
+  workspace root is already inside `codex-rs/`, the resolved path became
+  `codex-rs/codex-rs/core/src/exec.rs` (not found). Corrected to
+  `file = "core/src/exec.rs"`.
+- **`approvals-ui.toml` `add-ctrl-a-keybind`**: v0.112 inserted a `Ctrl+L`
+  clear-terminal handler (~18 lines) between the `Ctrl+T` and `Ctrl+G` handlers.
+  Updated `[patches.query] search` to span the full `Ctrl+T`–`Ctrl+L`–`Ctrl+G`
+  sequence. Updated replacement to insert the `Ctrl+A` preset-cycling block between
+  `Ctrl+L` and `Ctrl+G`. Added `fuzzy_expansion = 25` for future handler insertions.
+- **`privacy.toml` `privacy-realtime-remove-overrides-v108`**: v0.112 added a
+  `build_realtime_startup_context` block (~8 lines) between the
+  `unwrap_or(params.prompt)` and `let model = ...` anchors, breaking the exact search.
+  Updated search text to include the new block. Updated replacement to remove only the
+  privacy-sensitive overrides while preserving `build_realtime_startup_context`.
+  Added `fuzzy_expansion = 15`.
+- **`privacy.toml` `privacy-metrics-exporter-test-default-none`**: the assertion
+  `assert_eq!(config.otel.metrics_exporter, OtelExporterKind::Statsig)` was removed
+  upstream in v0.112. Deleted this patch block; the production-code equivalent is
+  already covered by `privacy-config-metrics-exporter-default-none`.
+- **`timing-loops.toml` `app-server-archive-wait-for-shutdown-watch`**: v0.112
+  extracted the sleep-polling loop from the archive handler into a dedicated
+  `wait_for_thread_shutdown` function. Variable names changed (`thread.` vs
+  `conversation.`), the comment was removed, and the return type changed to
+  `ThreadShutdownResult`. Retargeted the patch to the new function signature.
+- `fuzzy.rs` refactored to avoid O(max_expansion) redundant allocations: `haystack_lines`
+  and `line_offsets` are now computed once via `build_haystack_info` and shared across
+  all window-size iterations in `find_best_match_elastic`.
+
+### Complete documentation with iconics icons
 - GitHub Actions CI workflow
 - Issue templates (bug report, feature request)
 - Pull request template
@@ -26,6 +77,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   force non-login shell behavior, ignore `LOG_FORMAT`, ignore externally supplied zsh wrapper socket
   paths, require full wrapper handshake env in wrapper mode, stop exporting legacy
   `BASH_EXEC_WRAPPER`, and remove `CODEX_APP_SERVER_URL` env override in app-server test client.
+- Expanded `patches/privacy-v0.105-alpha13.toml` for `0.107.0-alpha.3`-era regressions:
+  removed raw realtime text debug logs, redacted js_repl nested-tool raw payload/error logs,
+  defaulted network proxy audit metadata to empty, and disabled network proxy policy audit events.
+- Retired 8 stale `privacy-v0.105-alpha13` entries that no longer match modern codex-rs layouts
+  and archived their exact definitions at
+  `archive/retired-patches/privacy-v0.105-alpha13.retired-on-0.107.0-alpha.3.toml`.
 - Enforced patch-file version gating in `src/config/applicator.rs`:
   incompatible files now return `PatchResult::SkippedVersion` instead of being applied.
 - Updated legacy privacy patch range in `patches/privacy.toml` to

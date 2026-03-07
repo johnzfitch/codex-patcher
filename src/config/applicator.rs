@@ -598,7 +598,18 @@ fn compute_edit_for_patch(
     content: &str,
 ) -> Result<Edit, ApplicationError> {
     match &patch.query {
-        Query::Text { search } => compute_text_edit(patch, file_path, content, search),
+        Query::Text {
+            search,
+            fuzzy_threshold,
+            fuzzy_expansion,
+        } => compute_text_edit(
+            patch,
+            file_path,
+            content,
+            search,
+            *fuzzy_threshold,
+            *fuzzy_expansion,
+        ),
         Query::AstGrep { pattern } => {
             compute_structural_edit(patch, file_path, content, pattern, true)
         }
@@ -652,7 +663,18 @@ fn apply_patch(
         Query::TreeSitter { pattern } => {
             apply_structural_patch(patch, &file_path, &content, pattern, false)
         }
-        Query::Text { search } => apply_text_patch(patch, &file_path, &content, search),
+        Query::Text {
+            search,
+            fuzzy_threshold,
+            fuzzy_expansion,
+        } => apply_text_patch(
+            patch,
+            &file_path,
+            &content,
+            search,
+            *fuzzy_threshold,
+            *fuzzy_expansion,
+        ),
     }
 }
 
@@ -662,6 +684,8 @@ fn compute_text_edit(
     file_path: &Path,
     content: &str,
     search: &str,
+    fuzzy_threshold: Option<f64>,
+    fuzzy_expansion: Option<usize>,
 ) -> Result<Edit, ApplicationError> {
     // Check if the search text exists in the file
     if !content.contains(search) {
@@ -680,6 +704,37 @@ fn compute_text_edit(
                 ));
             }
         }
+
+        // Fuzzy fallback: try to find a similar match
+        // Use per-patch threshold if specified, otherwise default to 0.85
+        let threshold = fuzzy_threshold.unwrap_or(0.85);
+        let fuzzy_result = match fuzzy_expansion {
+            Some(expansion) => {
+                crate::fuzzy::find_best_match_elastic(search, content, threshold, expansion)
+            }
+            None => crate::fuzzy::find_best_match(search, content, threshold),
+        };
+        if let Some(fuzzy) = fuzzy_result {
+            eprintln!(
+                "  [fuzzy] patch '{}': exact match failed, using fuzzy match (score: {:.2})",
+                patch.id, fuzzy.score
+            );
+
+            return match &patch.operation {
+                Operation::Replace { text } => Ok(Edit::new(
+                    file_path,
+                    fuzzy.start,
+                    fuzzy.end,
+                    text.clone(),
+                    fuzzy.matched_text,
+                )),
+                _ => Err(ApplicationError::TomlOperation {
+                    file: file_path.to_path_buf(),
+                    reason: "Text queries only support 'replace' operation".to_string(),
+                }),
+            };
+        }
+
         return Err(ApplicationError::NoMatch {
             file: file_path.to_path_buf(),
         });
@@ -722,8 +777,11 @@ fn apply_text_patch(
     file_path: &Path,
     content: &str,
     search: &str,
+    fuzzy_threshold: Option<f64>,
+    fuzzy_expansion: Option<usize>,
 ) -> Result<PatchResult, ApplicationError> {
-    let edit = compute_text_edit(patch, file_path, content, search)?;
+    let edit =
+        compute_text_edit(patch, file_path, content, search, fuzzy_threshold, fuzzy_expansion)?;
     let _ = edit.apply().map_err(ApplicationError::Edit)?;
 
     Ok(PatchResult::Applied {

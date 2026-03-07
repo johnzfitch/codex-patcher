@@ -149,28 +149,13 @@ text = '''
                 let metrics_exporter = t.metrics_exporter.unwrap_or(OtelExporterKind::None); // PRIVACY PATCH
 '''
 
-[[patches]]
-id = "privacy-metrics-exporter-test-default-none"
-file = "core/src/config/mod.rs"
-
-[patches.query]
-type = "text"
-search = '''
-        assert_eq!(config.otel.metrics_exporter, OtelExporterKind::Statsig);
-'''
-
-[patches.operation]
-type = "replace"
-text = '''
-        assert_eq!(config.otel.metrics_exporter, OtelExporterKind::None); // PRIVACY PATCH
-'''
-
 # =============================================================================
 # 2. TURN METADATA - Disable git/sandbox headers
 # =============================================================================
 
 [[patches]]
 id = "privacy-build-turn-metadata-header-noop"
+version = "<0.108.0-alpha.1"
 file = "core/src/turn_metadata.rs"
 
 [patches.query]
@@ -193,7 +178,7 @@ pub fn build_turn_metadata_header() -> Option<String> {
 [[patches]]
 id = "privacy-turn-metadata-state-current-header-always-none"
 file = "core/src/turn_metadata.rs"
-version = ">=0.105.0-alpha.13"
+version = ">=0.105.0-alpha.13, <0.108.0-alpha.1"
 
 [patches.query]
 type = "text"
@@ -216,7 +201,7 @@ text = '''
 [[patches]]
 id = "privacy-turn-metadata-state-disable-enrichment"
 file = "core/src/turn_metadata.rs"
-version = ">=0.105.0-alpha.13"
+version = ">=0.105.0-alpha.13, <0.108.0-alpha.1"
 
 [patches.query]
 type = "text"
@@ -239,7 +224,7 @@ text = '''
 [[patches]]
 id = "privacy-remove-turn-metadata-header-constant"
 file = "core/src/client.rs"
-version = ">=0.105.0-alpha.13"
+version = ">=0.105.0-alpha.13, <0.108.0-alpha.1"
 
 [patches.query]
 type = "text"
@@ -256,7 +241,7 @@ text = '''
 [[patches]]
 id = "privacy-disable-http-turn-metadata-header-insertion"
 file = "core/src/client.rs"
-version = ">=0.105.0-alpha.13"
+version = ">=0.105.0-alpha.13, <0.108.0-alpha.1"
 
 [patches.query]
 type = "text"
@@ -282,7 +267,7 @@ text = '''
 [[patches]]
 id = "privacy-analytics-track-skill-noop"
 file = "core/src/analytics_client.rs"
-version = ">=0.105.0-alpha.13"
+version = ">=0.105.0-alpha.13, <0.108.0-alpha.1"
 
 [patches.query]
 type = "text"
@@ -318,7 +303,7 @@ pub(crate) fn track_skill_invocations(
 [[patches]]
 id = "privacy-analytics-track-app-mentioned-noop"
 file = "core/src/analytics_client.rs"
-version = ">=0.105.0-alpha.13"
+version = ">=0.105.0-alpha.13, <0.108.0-alpha.1"
 
 [patches.query]
 type = "text"
@@ -354,7 +339,7 @@ pub(crate) fn track_app_mentioned(
 [[patches]]
 id = "privacy-analytics-track-app-used-noop"
 file = "core/src/analytics_client.rs"
-version = ">=0.105.0-alpha.13"
+version = ">=0.105.0-alpha.13, <0.108.0-alpha.1"
 
 [patches.query]
 type = "text"
@@ -426,6 +411,7 @@ version = ">=0.108.0-alpha.1"
 
 [patches.query]
 type = "text"
+fuzzy_expansion = 15
 search = '''
     let config = sess.get_config().await;
     if let Some(realtime_ws_base_url) = &config.experimental_realtime_ws_base_url {
@@ -435,6 +421,13 @@ search = '''
         .experimental_realtime_ws_backend_prompt
         .clone()
         .unwrap_or(params.prompt);
+    let prompt =
+        match build_realtime_startup_context(sess.as_ref(), REALTIME_STARTUP_CONTEXT_TOKEN_BUDGET)
+            .await
+        {
+            Some(context) => format!("{prompt}\n\n{context}"),
+            None => prompt,
+        };
     let model = config.experimental_realtime_ws_model.clone();
 '''
 
@@ -444,13 +437,20 @@ text = '''
     let config = sess.get_config().await;
     // PRIVACY PATCH: Removed experimental realtime config overrides.
     let prompt = params.prompt;
+    let prompt =
+        match build_realtime_startup_context(sess.as_ref(), REALTIME_STARTUP_CONTEXT_TOKEN_BUDGET)
+            .await
+        {
+            Some(context) => format!("{prompt}\n\n{context}"),
+            None => prompt,
+        };
     let model = config.experimental_realtime_ws_model.clone();
 '''
 
 [[patches]]
 id = "privacy-realtime-remove-text-output-debug-log"
 file = "core/src/realtime_conversation.rs"
-version = ">=0.105.0-alpha.13"
+version = ">=0.105.0-alpha.13, <0.108.0-alpha.1"
 
 [patches.query]
 type = "text"
@@ -467,7 +467,7 @@ text = '''
 [[patches]]
 id = "privacy-realtime-remove-text-input-debug-log"
 file = "core/src/realtime_conversation.rs"
-version = ">=0.105.0-alpha.13"
+version = ">=0.105.0-alpha.13, <0.108.0-alpha.1"
 
 [patches.query]
 type = "text"
@@ -627,7 +627,7 @@ text = '''
 [[patches]]
 id = "privacy-oauth-enforce-loopback-callback-url-host"
 file = "rmcp-client/src/perform_oauth_login.rs"
-version = ">=0.105.0-alpha.13"
+version = ">=0.105.0-alpha.13, <0.108.0-alpha.1"
 
 [patches.query]
 type = "text"
@@ -661,7 +661,7 @@ text = '''
 [[patches]]
 id = "privacy-connectors-remove-external-logos-query"
 file = "chatgpt/src/connectors.rs"
-version = ">=0.105.0-alpha.13"
+version = ">=0.105.0-alpha.13, <0.108.0-alpha.1"
 
 [patches.query]
 type = "text"
@@ -685,7 +685,7 @@ text = '''
 [[patches]]
 id = "privacy-connectors-remove-workspace-external-logos-query"
 file = "chatgpt/src/connectors.rs"
-version = ">=0.105.0-alpha.13"
+version = ">=0.105.0-alpha.13, <0.108.0-alpha.1"
 
 [patches.query]
 type = "text"
@@ -715,7 +715,7 @@ text = '''
 [[patches]]
 id = "privacy-config-force-login-shell-disabled"
 file = "core/src/config/mod.rs"
-version = ">=0.105.0-alpha.13"
+version = ">=0.105.0-alpha.13, <0.108.0-alpha.1"
 
 [patches.query]
 type = "text"
@@ -732,7 +732,7 @@ text = '''
 [[patches]]
 id = "privacy-app-server-log-format-env-ignored"
 file = "app-server/src/lib.rs"
-version = ">=0.105.0-alpha.13"
+version = ">=0.105.0-alpha.13, <0.108.0-alpha.1"
 
 [patches.query]
 type = "text"
@@ -757,7 +757,7 @@ text = '''
 [[patches]]
 id = "privacy-network-proxy-disable-policy-audit-events"
 file = "network-proxy/src/network_policy.rs"
-version = ">=0.105.0-alpha.13"
+version = ">=0.105.0-alpha.13, <0.108.0-alpha.1"
 
 [patches.query]
 type = "text"
@@ -774,3 +774,373 @@ text = '''
         // PRIVACY PATCH: Policy audit events disabled.
     }
 '''
+
+# =============================================================================
+# V0.108+ PRIVACY PATCHES
+# =============================================================================
+#
+# Patches below this line are for codex-rs v0.108.0-alpha.1 and later.
+# They use updated patterns matching the v0.108 codebase structure.
+# =============================================================================
+
+# =============================================================================
+# 12. TURN METADATA v0.108 - Disable all turn metadata header generation
+# =============================================================================
+
+[[patches]]
+version = ">=0.108.0-alpha.1"
+id = "privacy-v108-turn-metadata-header-noop"
+file = "core/src/turn_metadata.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+pub async fn build_turn_metadata_header($$$PARAMS) -> Option<String> {
+    $$$BODY
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub async fn build_turn_metadata_header(_cwd: &Path, _sandbox: Option<&str>) -> Option<String> {
+    // PRIVACY PATCH: Disable turn metadata header generation.
+    None
+}
+'''
+
+[[patches]]
+version = ">=0.108.0-alpha.1"
+id = "privacy-v108-turn-metadata-state-always-none"
+file = "core/src/turn_metadata.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+pub(crate) fn current_header_value(&self) -> Option<String> {
+    $$$BODY
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub(crate) fn current_header_value(&self) -> Option<String> {
+    // PRIVACY PATCH: Always return None to disable turn metadata headers.
+    let _ = &self.enriched_header;
+    let _ = &self.base_header;
+    None
+}
+'''
+
+[[patches]]
+version = ">=0.108.0-alpha.1"
+id = "privacy-v108-turn-metadata-disable-enrichment"
+file = "core/src/turn_metadata.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+pub(crate) fn spawn_git_enrichment_task(&self) {
+    $$$BODY
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub(crate) fn spawn_git_enrichment_task(&self) {
+    // PRIVACY PATCH: Disable git metadata enrichment.
+    let _ = &self.repo_root;
+}
+'''
+
+# =============================================================================
+# 1b. TURN METADATA - Remove header insertion in client.rs
+# =============================================================================
+
+[[patches]]
+version = ">=0.108.0-alpha.1"
+id = "privacy-v108-client-ws-metadata-noop"
+file = "core/src/client.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+fn build_ws_client_metadata(turn_metadata_header: Option<&str>) -> Option<HashMap<String, String>> {
+    $$$BODY
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+fn build_ws_client_metadata(_turn_metadata_header: Option<&str>) -> Option<HashMap<String, String>> {
+    // PRIVACY PATCH: Don't send turn metadata in websocket client metadata.
+    None
+}
+'''
+
+[[patches]]
+version = ">=0.108.0-alpha.1"
+id = "privacy-v108-client-responses-headers-no-metadata"
+file = "core/src/client.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+fn build_responses_headers(
+    beta_features_header: Option<&str>,
+    turn_state: Option<&Arc<OnceLock<String>>>,
+    turn_metadata_header: Option<&HeaderValue>,
+) -> ApiHeaderMap {
+    $$$BODY
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+fn build_responses_headers(
+    beta_features_header: Option<&str>,
+    turn_state: Option<&Arc<OnceLock<String>>>,
+    _turn_metadata_header: Option<&HeaderValue>,
+) -> ApiHeaderMap {
+    // PRIVACY PATCH: Removed turn metadata header insertion.
+    let mut headers = ApiHeaderMap::new();
+    if let Some(value) = beta_features_header
+        && !value.is_empty()
+        && let Ok(header_value) = HeaderValue::from_str(value)
+    {
+        headers.insert("x-codex-beta-features", header_value);
+    }
+    if let Some(turn_state) = turn_state
+        && let Some(state) = turn_state.get()
+        && let Ok(header_value) = HeaderValue::from_str(state)
+    {
+        headers.insert(X_CODEX_TURN_STATE_HEADER, header_value);
+    }
+    headers
+}
+'''
+
+[[patches]]
+version = ">=0.108.0-alpha.1"
+id = "privacy-v108-lib-remove-turn-metadata-export"
+file = "core/src/lib.rs"
+
+[patches.query]
+type = "text"
+search = 'pub use client::X_CODEX_TURN_METADATA_HEADER;'
+
+[patches.operation]
+type = "replace"
+text = '// PRIVACY PATCH: X_CODEX_TURN_METADATA_HEADER export removed.'
+
+# =============================================================================
+# 2. ANALYTICS - Disable skill and app tracking (free functions only)
+# =============================================================================
+
+[[patches]]
+version = ">=0.108.0-alpha.1"
+id = "privacy-v108-analytics-track-skill-noop"
+file = "core/src/analytics_client.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+pub(crate) fn track_skill_invocations(
+    queue: &AnalyticsEventsQueue,
+    config: Arc<Config>,
+    tracking: Option<TrackEventsContext>,
+    invocations: Vec<SkillInvocation>,
+) {
+    $$$BODY
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub(crate) fn track_skill_invocations(
+    _queue: &AnalyticsEventsQueue,
+    _config: Arc<Config>,
+    _tracking: Option<TrackEventsContext>,
+    _invocations: Vec<SkillInvocation>,
+) {
+    // PRIVACY PATCH: Disable skill invocation tracking.
+}
+'''
+
+[[patches]]
+version = ">=0.108.0-alpha.1"
+id = "privacy-v108-analytics-track-app-mentioned-noop"
+file = "core/src/analytics_client.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+pub(crate) fn track_app_mentioned(
+    queue: &AnalyticsEventsQueue,
+    config: Arc<Config>,
+    tracking: Option<TrackEventsContext>,
+    mentions: Vec<AppInvocation>,
+) {
+    $$$BODY
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub(crate) fn track_app_mentioned(
+    _queue: &AnalyticsEventsQueue,
+    _config: Arc<Config>,
+    _tracking: Option<TrackEventsContext>,
+    _mentions: Vec<AppInvocation>,
+) {
+    // PRIVACY PATCH: Disable app mentioned tracking.
+}
+'''
+
+[[patches]]
+version = ">=0.108.0-alpha.1"
+id = "privacy-v108-analytics-track-app-used-noop"
+file = "core/src/analytics_client.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+pub(crate) fn track_app_used(
+    queue: &AnalyticsEventsQueue,
+    config: Arc<Config>,
+    tracking: Option<TrackEventsContext>,
+    app: AppInvocation,
+) {
+    $$$BODY
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+pub(crate) fn track_app_used(
+    _queue: &AnalyticsEventsQueue,
+    _config: Arc<Config>,
+    _tracking: Option<TrackEventsContext>,
+    _app: AppInvocation,
+) {
+    // PRIVACY PATCH: Disable app used tracking.
+}
+'''
+
+# =============================================================================
+# 3. CONNECTORS - Remove external logo queries
+# =============================================================================
+
+[[patches]]
+version = ">=0.108.0-alpha.1"
+id = "privacy-v108-connectors-remove-external-logos-directory"
+file = "chatgpt/src/connectors.rs"
+
+[patches.query]
+type = "text"
+search = 'None => "/connectors/directory/list?tier=categorized&external_logos=true".to_string(),'
+
+[patches.operation]
+type = "replace"
+text = 'None => "/connectors/directory/list?tier=categorized".to_string(), // PRIVACY: no external_logos'
+
+[[patches]]
+version = ">=0.108.0-alpha.1"
+id = "privacy-v108-connectors-remove-external-logos-workspace"
+file = "chatgpt/src/connectors.rs"
+
+[patches.query]
+type = "text"
+search = '"/connectors/directory/list_workspace?external_logos=true".to_string(),'
+
+[patches.operation]
+type = "replace"
+text = '"/connectors/directory/list_workspace".to_string(), // PRIVACY: no external_logos'
+
+[[patches]]
+version = ">=0.108.0-alpha.1"
+id = "privacy-v108-connectors-remove-external-logos-paged"
+file = "chatgpt/src/connectors.rs"
+
+[patches.query]
+type = "text"
+search = '"/connectors/directory/list?tier=categorized&token={encoded_token}&external_logos=true"'
+
+[patches.operation]
+type = "replace"
+text = '"/connectors/directory/list?tier=categorized&token={encoded_token}" // PRIVACY: no external_logos'
+
+# =============================================================================
+# 4. NETWORK PROXY - Disable policy audit events
+# =============================================================================
+
+[[patches]]
+version = ">=0.108.0-alpha.1"
+id = "privacy-v108-network-proxy-disable-audit-events"
+file = "network-proxy/src/network_policy.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+fn emit_policy_audit_event(state: &NetworkProxyState, args: PolicyAuditEventArgs<'_>) {
+    $$$BODY
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+fn emit_policy_audit_event(_state: &NetworkProxyState, _args: PolicyAuditEventArgs<'_>) {
+    // PRIVACY PATCH: Policy audit events disabled.
+}
+'''
+
+# =============================================================================
+# 5. APP SERVER - Ignore log format environment variable
+# =============================================================================
+
+[[patches]]
+version = ">=0.108.0-alpha.1"
+id = "privacy-v108-app-server-log-format-env-ignored"
+file = "app-server/src/lib.rs"
+
+[patches.query]
+type = "ast-grep"
+pattern = '''
+fn log_format_from_env() -> LogFormat {
+    $$$BODY
+}
+'''
+
+[patches.operation]
+type = "replace"
+text = '''
+fn log_format_from_env() -> LogFormat {
+    // PRIVACY PATCH: Ignore LOG_FORMAT env var, always use default.
+    LogFormat::Default
+}
+'''
+
+# =============================================================================
+# 6. CONFIG - Disable login shell by default
+# =============================================================================
+
+[[patches]]
+version = ">=0.108.0-alpha.1"
+id = "privacy-v108-config-disable-login-shell"
+file = "core/src/config/mod.rs"
+
+[patches.query]
+type = "text"
+search = 'let allow_login_shell = cfg.allow_login_shell.unwrap_or(true);'
+
+[patches.operation]
+type = "replace"
+text = 'let allow_login_shell = cfg.allow_login_shell.unwrap_or(false); // PRIVACY: default off'
