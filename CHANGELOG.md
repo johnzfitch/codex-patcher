@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-03-07
+
+### Fixed
+- **Version range false positive for pre-release builds**: `matches_requirement` incorrectly
+  matched pre-release versions past an upper bound that had a pre-release tag (e.g.
+  `0.112.0-alpha.11` matched `>=0.105.0-alpha.13, <0.108.0-alpha.1`). The `dominated`
+  fallback stripped the pre-release, then the semver crate silently ignored the upper-bound
+  comparator (different `major.minor.patch` base), leaving only the lower bound to evaluate.
+  Fixed by (a) relaxing `dominated` so upper-bound comparators don't need their base to be
+  below the version's base (this also unblocks mid-range pre-release versions like
+  `0.106.0-alpha.5`), and (b) adding a guard that skips the retry when a pre-release
+  upper-bound comparator's base is exceeded by the version.
+- **`privacy.toml` v105 realtime patch**: replacement text used `_config` but downstream
+  code in the same function still referenced `config`, causing a compile error if the patch
+  applied within its declared version range.
+
 ## [0.1.1] - 2026-03-07
 
 ### Added
@@ -114,6 +130,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Before-text verification
 - UTF-8 validation
 
-[Unreleased]: https://github.com/johnzfitch/codex-patcher/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/johnzfitch/codex-patcher/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/johnzfitch/codex-patcher/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/johnzfitch/codex-patcher/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/johnzfitch/codex-patcher/releases/tag/v0.1.0
