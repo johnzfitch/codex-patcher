@@ -28,10 +28,7 @@ fn check_patch_version(patch: &PatchDefinition, workspace_version: &str) -> Opti
             "patch version {} not satisfied by workspace {}",
             version_req, workspace_version
         )),
-        Err(_) => Some(format!(
-            "invalid patch version constraint: {}",
-            version_req
-        )),
+        Err(_) => Some(format!("invalid patch version constraint: {}", version_req)),
     }
 }
 
@@ -287,10 +284,8 @@ fn check_patches_batched(
         for patch in patches {
             // Check per-patch version constraint
             if let Some(reason) = check_patch_version(patch, workspace_version) {
-                immediate_results.push((
-                    patch.id.clone(),
-                    Ok(PatchResult::SkippedVersion { reason }),
-                ));
+                immediate_results
+                    .push((patch.id.clone(), Ok(PatchResult::SkippedVersion { reason })));
                 continue;
             }
 
@@ -463,10 +458,8 @@ fn apply_patches_batched(
             for patch in patches {
                 // Check per-patch version constraint
                 if let Some(reason) = check_patch_version(patch, workspace_version) {
-                    all_results.push((
-                        patch.id.clone(),
-                        Ok(PatchResult::SkippedVersion { reason }),
-                    ));
+                    all_results
+                        .push((patch.id.clone(), Ok(PatchResult::SkippedVersion { reason })));
                     continue;
                 }
                 all_results.push((
@@ -523,10 +516,7 @@ fn apply_patches_batched(
         for patch in patches {
             // Check per-patch version constraint
             if let Some(reason) = check_patch_version(patch, workspace_version) {
-                patch_errors.push((
-                    patch.id.clone(),
-                    Ok(PatchResult::SkippedVersion { reason }),
-                ));
+                patch_errors.push((patch.id.clone(), Ok(PatchResult::SkippedVersion { reason })));
                 continue;
             }
             match compute_edit_for_patch(patch, &file_path, &content) {
@@ -705,8 +695,12 @@ fn compute_text_edit(
             }
         }
 
-        // Fuzzy fallback: try to find a similar match
-        // Use per-patch threshold if specified, otherwise default to 0.85
+        // Fuzzy fallback: only when the user has explicitly opted in via threshold or expansion.
+        if fuzzy_threshold.is_none() && fuzzy_expansion.is_none() {
+            return Err(ApplicationError::NoMatch {
+                file: file_path.to_path_buf(),
+            });
+        }
         let threshold = fuzzy_threshold.unwrap_or(0.85);
         let fuzzy_result = match fuzzy_expansion {
             Some(expansion) => {
@@ -780,8 +774,14 @@ fn apply_text_patch(
     fuzzy_threshold: Option<f64>,
     fuzzy_expansion: Option<usize>,
 ) -> Result<PatchResult, ApplicationError> {
-    let edit =
-        compute_text_edit(patch, file_path, content, search, fuzzy_threshold, fuzzy_expansion)?;
+    let edit = compute_text_edit(
+        patch,
+        file_path,
+        content,
+        search,
+        fuzzy_threshold,
+        fuzzy_expansion,
+    )?;
     let _ = edit.apply().map_err(ApplicationError::Edit)?;
 
     Ok(PatchResult::Applied {

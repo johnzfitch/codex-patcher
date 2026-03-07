@@ -59,7 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `line_offsets` are now computed once via `build_haystack_info` and shared across
   all window-size iterations in `find_best_match_elastic`.
 
-### Complete documentation with iconics icons
+- Complete documentation with iconics icons
 - GitHub Actions CI workflow
 - Issue templates (bug report, feature request)
 - Pull request template

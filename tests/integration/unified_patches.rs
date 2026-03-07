@@ -1,9 +1,7 @@
 //! Integration tests for unified patch system with per-patch version constraints
 //! and fuzzy matching fallback.
 
-use codex_patcher::config::schema::{
-    Metadata, Operation, PatchConfig, PatchDefinition, Query,
-};
+use codex_patcher::config::schema::{Metadata, Operation, PatchConfig, PatchDefinition, Query};
 use codex_patcher::config::{apply_patches, PatchResult};
 use std::fs;
 use tempfile::TempDir;
@@ -147,10 +145,7 @@ fn test_patch_without_version_applies_to_all_versions() {
 #[test]
 fn test_fuzzy_match_fallback_on_similar_code() {
     // Code has slight difference (extra space, different formatting)
-    let workspace = create_workspace_with_file(
-        "src/lib.rs",
-        "fn  hello()  {\n    // comment\n}",
-    );
+    let workspace = create_workspace_with_file("src/lib.rs", "fn  hello()  {\n    // comment\n}");
     let config = make_config(vec![text_patch(
         "fuzzy-patch",
         "src/lib.rs",
@@ -297,15 +292,17 @@ fn test_unified_patch_mixed_results() {
     let results = apply_patches(&config, workspace.path(), "0.99.0");
     assert_eq!(results.len(), 3);
 
-    let results_map: std::collections::HashMap<_, _> =
-        results.into_iter().collect();
+    let results_map: std::collections::HashMap<_, _> = results.into_iter().collect();
 
     assert!(
         matches!(results_map["applies"], Ok(PatchResult::Applied { .. })),
         "Expected 'applies' to succeed"
     );
     assert!(
-        matches!(results_map["skipped"], Ok(PatchResult::SkippedVersion { .. })),
+        matches!(
+            results_map["skipped"],
+            Ok(PatchResult::SkippedVersion { .. })
+        ),
         "Expected 'skipped' to be version-gated"
     );
     assert!(
@@ -380,7 +377,10 @@ fn test_elastic_matches_when_lines_inserted_inside_needle_span() {
     );
 
     let content = fs::read_to_string(workspace.path().join("src/lib.rs")).unwrap();
-    assert!(content.contains("// PATCHED"), "replacement text should be present");
+    assert!(
+        content.contains("// PATCHED"),
+        "replacement text should be present"
+    );
 }
 
 #[test]

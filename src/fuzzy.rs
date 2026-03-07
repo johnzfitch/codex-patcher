@@ -59,8 +59,14 @@ pub fn find_best_match_elastic(
 
     let mut best: Option<FuzzyMatch> = None;
     for expansion in 0..=max_expansion {
-        let candidate =
-            slide_window(needle, haystack, &lines, &offsets, threshold, base_lines + expansion);
+        let candidate = slide_window(
+            needle,
+            haystack,
+            &lines,
+            &offsets,
+            threshold,
+            base_lines + expansion,
+        );
         if let Some(c) = candidate {
             if best.as_ref().is_none_or(|b| c.score > b.score) {
                 best = Some(c);
@@ -229,7 +235,10 @@ mod tests {
 
         let m = find_best_match_elastic(needle, haystack, 0.55, 1)
             .expect("elastic (best score 0.632) should find match at threshold 0.55");
-        assert!(m.matched_text.contains("TOP_ANCHOR"), "match must contain opening anchor");
+        assert!(
+            m.matched_text.contains("TOP_ANCHOR"),
+            "match must contain opening anchor"
+        );
         assert!(
             m.matched_text.contains("BOTTOM_ANCHOR"),
             "match must contain closing anchor"
@@ -242,8 +251,7 @@ mod tests {
         // score lower and not displace it.
         let needle = "fn exact() {}";
         let haystack = "preamble\nfn exact() {}\npostamble\nmore stuff\n";
-        let m = find_best_match_elastic(needle, haystack, 0.9, 5)
-            .expect("should find exact match");
+        let m = find_best_match_elastic(needle, haystack, 0.9, 5).expect("should find exact match");
         assert!((m.score - 1.0).abs() < 1e-9, "perfect match should win");
         assert_eq!(&haystack[m.start..m.end], "fn exact() {}");
     }

@@ -123,7 +123,7 @@ pattern = '''
 - Matching based on syntax node types
 - Need predicates like `#match?`, `#eq?`
 
-### 4. Text (Literal String Search with Fuzzy Fallback)
+### 3. Text (Literal String Search with Fuzzy Fallback)
 
 Locates a verbatim string in the target file, with an optional fuzzy fallback when
 upstream code has drifted slightly from the stored search text:
@@ -194,7 +194,7 @@ letting the patch apply correctly at the configured threshold.
   across version bumps (new logging, feature flags, early-return guards, etc.)
 - You want a single patch definition that survives N versions of growth
 
-### 3. TOML (For Cargo.toml, config files)
+### 4. TOML (For Cargo.toml, config files)
 
 Structure-preserving TOML edits:
 
