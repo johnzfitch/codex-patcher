@@ -495,6 +495,33 @@ fn apply_patches_batched(
             continue;
         }
 
+        // Drain version-skipped patches before the file-existence check so a
+        // patch targeting a file removed in a newer version returns
+        // SkippedVersion instead of NoMatch.
+        let patches: Vec<_> = patches
+            .into_iter()
+            .filter(|patch| {
+                match check_patch_version(patch, workspace_version) {
+                    Err(e) => {
+                        all_results.push((patch.id.clone(), Err(e)));
+                        false
+                    }
+                    Ok(Some(reason)) => {
+                        all_results.push((
+                            patch.id.clone(),
+                            Ok(PatchResult::SkippedVersion { reason }),
+                        ));
+                        false
+                    }
+                    Ok(None) => true,
+                }
+            })
+            .collect();
+
+        if patches.is_empty() {
+            continue;
+        }
+
         // Check if file exists
         if !file_path.exists() {
             for patch in patches {
@@ -534,19 +561,6 @@ fn apply_patches_batched(
         let mut patch_errors = Vec::new();
 
         for patch in patches {
-            // Check per-patch version constraint
-            match check_patch_version(patch, workspace_version) {
-                Err(e) => {
-                    patch_errors.push((patch.id.clone(), Err(e)));
-                    continue;
-                }
-                Ok(Some(reason)) => {
-                    patch_errors
-                        .push((patch.id.clone(), Ok(PatchResult::SkippedVersion { reason })));
-                    continue;
-                }
-                Ok(None) => {}
-            }
             match compute_edit_for_patch(patch, &file_path, &content) {
                 Ok(edit) => edits_with_ids.push((patch.id.clone(), edit)),
                 Err(e) => patch_errors.push((patch.id.clone(), Err(e))),
